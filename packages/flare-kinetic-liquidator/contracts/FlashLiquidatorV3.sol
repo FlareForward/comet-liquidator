@@ -52,8 +52,8 @@ interface IRouterV2 {
 contract FlashLiquidatorV3 {
   address public immutable factoryV3;
   address public immutable router;
+  address public immutable beneficiary; // profit sink - set at deployment, immutable
   address public owner;
-  address public beneficiary; // profit sink in PAYOUT_TOKEN
   bool public paused;
   uint256 private _locked;
 
@@ -156,12 +156,6 @@ contract FlashLiquidatorV3 {
   }
 
   // === Admin Functions ===
-
-  /// @notice Update beneficiary address
-  function setBeneficiary(address _beneficiary) external onlyOwner {
-    require(_beneficiary != address(0), "zero address");
-    beneficiary = _beneficiary;
-  }
 
   /// @notice Emergency pause
   function setPaused(bool _paused) external onlyOwner {

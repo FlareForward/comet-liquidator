@@ -9,9 +9,10 @@ You only need **ONE** `FlashLiquidatorV3` deployment per chain (Flare). This sin
 ✅ **Uniswap V3 Flash Loans** - Implements `uniswapV3FlashCallback`  
 ✅ **Multi-Market Support** - Works with any Kinetic (Compound-v2) market  
 ✅ **SparkDEX/Enosys Compatible** - Factory and router wired at deployment  
+✅ **Immutable Beneficiary** - Profit destination set at deployment (gas-efficient)  
 ✅ **Reentrancy Guard** - Prevents reentrancy attacks  
 ✅ **Emergency Pause** - Owner can pause all operations  
-✅ **Admin Functions** - Update beneficiary, rescue tokens, transfer ownership  
+✅ **Admin Functions** - Pause, rescue tokens, transfer ownership  
 
 ## Liquidation Flow
 
@@ -108,11 +109,6 @@ npm run start:flare
 
 Once deployed, the owner can:
 
-### Update Beneficiary
-```solidity
-contract.setBeneficiary(newAddress)
-```
-
 ### Emergency Pause
 ```solidity
 contract.setPaused(true)   // Pause all liquidations
@@ -129,12 +125,40 @@ contract.rescueTokens(tokenAddress, recipientAddress, amount)
 contract.transferOwnership(newOwnerAddress)
 ```
 
+## Changing Beneficiary
+
+**Important**: The `beneficiary` address is **immutable** (set at deployment for gas efficiency).
+
+To redirect profits to a different address:
+
+1. **Redeploy** the contract with new beneficiary:
+   ```powershell
+   $env:PAYOUT_TOKEN_BENEFICIARY="0xNewAddress"
+   npm run deploy:flash
+   ```
+
+2. **Update `.env`** with new contract address:
+   ```env
+   FLASH_EXECUTOR_V3=0xNewContractAddress
+   ```
+
+3. **Restart bot** to use new contract
+
+**Example - Redirect to specific address**:
+```powershell
+$env:DEPLOYER_KEY="0xYOUR_PRIVATE_KEY"
+$env:PAYOUT_TOKEN_BENEFICIARY="0x492CF24a0162Bcd72265d4b7542836A5593d62Ac"
+npm run deploy:flash
+# Copy printed address to .env
+npm run start:flare
+```
+
 ## Security Notes
 
 ✅ **Reentrancy Protected** - `nonReentrant` modifier on entry  
 ✅ **Pause Capability** - Owner can emergency-stop operations  
 ✅ **Access Control** - Admin functions restricted to owner  
-✅ **Immutable Core** - Factory and router cannot be changed  
+✅ **Immutable Core** - Factory, router, and beneficiary cannot be changed  
 ✅ **Profit Validation** - Requires minimum profit before sending  
 
 ## Gas Estimates
@@ -144,9 +168,9 @@ contract.transferOwnership(newOwnerAddress)
 | Deployment | ~2,000,000 |
 | Liquidation (no swaps) | ~400,000 |
 | Liquidation (2 swaps) | ~650,000 |
-| setBeneficiary() | ~30,000 |
 | setPaused() | ~25,000 |
 | rescueTokens() | ~50,000 |
+| transferOwnership() | ~28,000 |
 
 ## Multi-Market Support
 
