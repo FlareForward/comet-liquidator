@@ -1,0 +1,8 @@
+# Denylist - one address per line
+# Lines starting with # are comments and will be ignored
+# Addresses are automatically normalized to lowercase
+
+# Add problematic addresses here, one per line:
+# 0x0811e928418f431acddd944c58791b44a64e431d
+# 0x91830d51bbdc7010876f3d7cd2cd1866985643f5
+

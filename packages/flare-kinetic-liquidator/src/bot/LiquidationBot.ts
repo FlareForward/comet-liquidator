@@ -8,6 +8,7 @@ import { execFlash } from "../strategy/FlashRepayStrategy";
 import { quoteOut, withSlippage } from "../services/Quotes";
 import { flashProfitToQuote } from "../services/ProfitGuard";
 import { calcRepayAmount, roughSeizedUnderlying } from "../services/LiquidationMath";
+import { isDenied, getDenylistSize, watchDenylist } from "../lib/denylist";
 import ComptrollerAbi from "../abi/comptroller.json";
 
 interface BotConfig {
@@ -56,6 +57,13 @@ export class LiquidationBot {
   }
 
   async init() {
+    // Enable hot-reload of denylist if DENYLIST_WATCH=true
+    if (process.env.DENYLIST_WATCH === "true") {
+      watchDenylist();
+    }
+    
+    this.log({ event: "denylist_loaded", count: getDenylistSize() });
+    
     const prov = this.provider;
     const list = (process.env.UNITROLLER_LIST || this.config.comptroller)
       .split(",")
@@ -147,6 +155,15 @@ export class LiquidationBot {
       }));
       
       this.log({ event: "chain_candidates_found", count: candidates.length });
+    }
+    
+    // Filter out denylisted candidates early - avoids wasted RPC calls
+    const beforeDenylist = candidates.length;
+    candidates = candidates.filter(c => !isDenied(c.address));
+    const filtered = beforeDenylist - candidates.length;
+    
+    if (filtered > 0) {
+      this.log({ event: "denylist_filtered", count: filtered });
     }
     
     this.log({ event: "total_candidates", count: candidates.length });

@@ -5,6 +5,7 @@ import { PriceServiceCompound } from "../services/PriceServiceCompound";
 import { healthFactor } from "../services/HealthFactor";
 import { accountLiquidity, MarketInfo } from "../services/AccountLiquidity";
 import { Candidate } from "../sources/SubgraphCandidates";
+import { isDenied } from "../lib/denylist";
 import cTokenAbi from "../abi/ctoken.json";
 
 export interface ValidatedCandidate extends Candidate {
@@ -28,9 +29,17 @@ export class OnChainValidator {
   ) {}
 
   async validate(candidate: Candidate, minHealthFactor: number): Promise<ValidatedCandidate | null> {
+    // Early exit for denylisted addresses - saves RPC calls
+    if (isDenied(candidate.address)) {
+      console.log(`[OnChainValidator] Skipping denylisted address: ${candidate.address}`);
+      return null;
+    }
+    
     try {
       const markets = await this.comptroller.getAllMarkets();
       const params = await this.comptroller.getParams();
+      
+      console.log(`[OnChainValidator] Found ${markets.length} markets from comptroller`);
       
       const marketInfos: MarketInfo[] = [];
       const marketData = [];
@@ -39,7 +48,10 @@ export class OnChainValidator {
         const adapter = new CTokenAdapter(this.provider, kToken);
         const info = await this.comptroller.marketInfo(kToken);
         
-        if (!info.isListed) continue;
+        if (!info.isListed) {
+          console.log(`[OnChainValidator] Market ${kToken} is not listed, skipping`);
+          continue;
+        }
         
         const underlyingData = await adapter.underlying();
         const price = await this.priceService.priceOf(kToken);
