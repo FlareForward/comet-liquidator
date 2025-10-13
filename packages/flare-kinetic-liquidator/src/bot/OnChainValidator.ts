@@ -6,13 +6,14 @@ import { Candidate } from "../sources/SubgraphCandidates";
 import { isDenied } from "../lib/denylist";
 
 export interface ValidatedCandidate extends Candidate {
-  healthFactor: number;
+  healthFactor: number; // legacy field; not used for decision
   liquidity: bigint;
   shortfall: bigint;
   totalBorrowUSD: bigint;
   totalCollateralUSD: bigint;
   assetsIn: string[];
   rpcCalls: number;
+  comptroller: string;
 }
 
 // Comptroller ABI for on-chain checks
@@ -66,6 +67,19 @@ export class OnChainValidator {
     const oracleAddr = await this.comptrollerContract.oracle();
     this.rpcCallCount++;
     this.oracleContract = new Contract(oracleAddr, ORACLE_ABI, this.provider);
+    
+    // Log excluded markets once at startup
+    const excluded = (process.env.EXCLUDED_MARKETS || "")
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean);
+    
+    if (excluded.length > 0) {
+      console.warn(`⚠️  [OnChainValidator] Excluded ${excluded.length} market(s) with missing oracle feeds:`);
+      excluded.forEach(addr => console.warn(`   - ${addr}`));
+      console.warn(`   Fix oracle mapping and remove from EXCLUDED_MARKETS to re-enable`);
+    }
+    
     console.log(`[OnChainValidator] Comptroller=${this.comptroller.comptroller} Oracle=${oracleAddr}`);
   }
 
@@ -209,7 +223,6 @@ export class OnChainValidator {
 
       // Step 2: Calculate total borrow USD using proper price normalization
       let totalBorrowUSD = 0n;
-      let rpcCallsForBorrows = 0;
       const borrowDetails: Array<{ cToken: string; borrowUSD: bigint; decimals: number; price: bigint; borrow: bigint }> = [];
       
       const excluded = (process.env.EXCLUDED_MARKETS || "")
@@ -219,12 +232,12 @@ export class OnChainValidator {
 
       for (const cToken of assetsIn) {
         if (excluded.includes(cToken.toLowerCase())) {
-          console.warn(`[OnChainValidator] Skipping excluded market ${cToken}`);
+          // Silently skip - already logged at startup
           continue;
         }
         try {
           const usd = await borrowUsd18WithOracle(candidate.address, cToken, this.provider, scope!.oracle);
-          rpcCallsForBorrows += 2; // price + borrow
+          this.rpcCallCount += 2; // price + borrow
           
           if (usd > 0n) {
             totalBorrowUSD += usd;
@@ -241,17 +254,22 @@ export class OnChainValidator {
         }
       }
       
-      // Log detailed info for first few candidates
-      if (shouldDebug && borrowDetails.length > 0) {
-        console.log(`[OnChainValidator] ${candidate.address} borrow details:`, 
-          borrowDetails.map(d => ({
-            cToken: d.cToken,
-            decimals: d.decimals,
-            price: d.price.toString(),
-            borrow: d.borrow.toString(),
-            borrowUSD: d.borrowUSD.toString()
-          }))
-        );
+      // Per-user telemetry (first few)
+      if (shouldDebug) {
+        console.log(`[OnChainValidator] ${candidate.address} scope`, {
+          assetsIn: assetsIn.length,
+          comptroller: scope?.compAddr,
+          oracle: scope?.oracle,
+          rpc_calls: this.rpcCallCount
+        });
+        if (borrowDetails.length > 0) {
+          console.log(`[OnChainValidator] ${candidate.address} borrow details`, 
+            borrowDetails.map(d => ({
+              cToken: d.cToken,
+              borrowUSD: d.borrowUSD.toString()
+            }))
+          );
+        }
       }
 
       // Apply minimum debt threshold
@@ -267,7 +285,7 @@ export class OnChainValidator {
         return null;
       }
 
-      console.log(`[OnChainValidator] ${candidate.address}: has_debt (assetsIn=${assetsIn.length}, totalBorrowUSD=${totalBorrowUSD})`);
+      console.log(`[OnChainValidator] ${candidate.address}: has_debt (assetsIn=${assetsIn.length}, totalBorrowUSD=${totalBorrowUSD.toString()})`);
 
       // Debug logging for first few candidates
       if (shouldDebug) {
@@ -286,25 +304,32 @@ export class OnChainValidator {
 
       // shortfall > 0 means liquidatable (HF < 1.0)
       if (shortfall === 0n) {
-        console.log(`[OnChainValidator] ${candidate.address}: healthy (liquidity=${liquidity}, shortfall=0)`);
+        console.log(`[OnChainValidator] ${candidate.address}: healthy (liquidity=${liquidity.toString()}, shortfall=0)`);
         return null;
       }
 
-      // Calculate health factor: HF = collateral / (collateral + shortfall)
-      const totalValue = liquidity + shortfall;
-      const healthFactor = totalValue === 0n ? 0 : Number(liquidity) / Number(totalValue);
-      
-      console.log(`[OnChainValidator] ${candidate.address}: LIQUIDATABLE (HF=${healthFactor.toFixed(4)}, liquidity=${liquidity}, shortfall=${shortfall})`);
+      // Per-user HF telemetry
+      console.log(JSON.stringify({
+        event: "HF",
+        user: candidate.address,
+        comp: scope!.compAddr,
+        assetsIn: assetsIn.length,
+        rpc_calls: this.rpcCallCount,
+        usd: totalBorrowUSD.toString(),
+        liq: liquidity.toString(),
+        short: shortfall.toString()
+      }));
 
       return {
         ...candidate,
-        healthFactor,
+        healthFactor: 0,
         liquidity,
         shortfall,
         totalBorrowUSD,
         totalCollateralUSD: liquidity,
         assetsIn,
-        rpcCalls: this.rpcCallCount
+        rpcCalls: this.rpcCallCount,
+        comptroller: scope!.compAddr
       };
 
     } catch (err: any) {

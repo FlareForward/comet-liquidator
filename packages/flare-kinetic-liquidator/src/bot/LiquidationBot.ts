@@ -140,13 +140,20 @@ export class LiquidationBot {
       markets: this.markets
     });
     
+    const excludedMarkets = (process.env.EXCLUDED_MARKETS || "")
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean);
+    
     this.log({ 
       event: "bot_ready",
       comptroller: selected.addr,
       oracle: selected.oracle,
-      closeFactor: (Number(selected.closeFactor) / 1e18).toFixed(4),
-      liqIncentive: (Number(selected.liqIncentive) / 1e18).toFixed(4),
+      closeFactor: selected.closeFactor.toString(),
+      liqIncentive: selected.liqIncentive.toString(),
       markets: this.markets.length,
+      excluded_markets: excludedMarkets.length,
+      excluded_list: excludedMarkets.length > 0 ? excludedMarkets : undefined,
       HF_SOURCE: process.env.HF_SOURCE || "chain",
       candidate_source: this.config.candidateSource,
       simulate: this.config.simulate, 
@@ -290,19 +297,77 @@ export class LiquidationBot {
       this.log({ 
         event: "liquidatable_found", 
         borrower: validated.address, 
-        healthFactor: validated.healthFactor.toFixed(4),
         shortfall: validated.shortfall.toString(),
         liquidity: validated.liquidity.toString(),
+        totalBorrowUSD: validated.totalBorrowUSD.toString(),
+        comptroller: validated.comptroller,
         assetsIn: validated.assetsIn.length
       });
       
-      // TODO: Need to implement market selection logic based on new ValidatedCandidate structure
-      // For now, skip liquidation execution until we refactor market selection
+      // Market selection: pick repay market from user's actual borrows
+      const excludedSet = new Set((process.env.EXCLUDED_MARKETS || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
+      const eligibleMarkets = validated.assetsIn.filter(m => !excludedSet.has(m.toLowerCase()));
+      
+      if (eligibleMarkets.length === 0) {
+        this.log({ event: "skip_no_eligible_markets", borrower: validated.address });
+        continue;
+      }
+      
+      // Find first market with non-zero borrow balance
+      let selectedRepayMarket: string | null = null;
+      for (const market of eligibleMarkets) {
+        try {
+          const cToken = new Contract(market, ["function borrowBalanceStored(address) view returns (uint256)"], this.provider);
+          const debt = await cToken.borrowBalanceStored(validated.address);
+          if (debt > 0n) {
+            selectedRepayMarket = market;
+            this.log({ 
+              event: "market_selected", 
+              borrower: validated.address, 
+              repay_market: market, 
+              debt: debt.toString(),
+              comptroller: validated.comptroller
+            });
+            break;
+          }
+        } catch (err: any) {
+          this.log({ event: "market_check_failed", market, error: err.message });
+        }
+      }
+      
+      if (!selectedRepayMarket) {
+        this.log({ event: "skip_no_debt_in_eligible_markets", borrower: validated.address, checked: eligibleMarkets.length });
+        continue;
+      }
+      
+      // Skip execution if SIMULATE=true or EXECUTE=false
+      if (this.config.simulate || !this.config.execute) {
+        this.log({ 
+          event: "simulate_skip_execution", 
+          borrower: validated.address,
+          repay_market: selectedRepayMarket,
+          simulate: this.config.simulate,
+          execute: this.config.execute
+        });
+        liquidated++; // count as processed
+        continue;
+      }
+      
+      // Execute liquidation
       this.log({ 
-        event: "skip_execution_not_implemented", 
+        event: "executing_liquidation", 
         borrower: validated.address,
-        note: "Market selection needs refactoring for new validator structure"
+        repay_market: selectedRepayMarket,
+        comptroller: validated.comptroller
       });
+      
+      // TODO: Wire actual execution via execFlash once profit estimation is ready
+      this.log({ 
+        event: "execution_pending", 
+        borrower: validated.address,
+        note: "Profit estimation and flash execution not yet wired"
+      });
+      liquidated++;
       continue;
     }
     
@@ -313,7 +378,7 @@ export class LiquidationBot {
       candidates_checked: candidates.length,
       liquidatable_found: validated_count,
       rpc_calls: rpcCalls,
-      avg_rpc_per_candidate: candidates.length > 0 ? (rpcCalls / candidates.length).toFixed(2) : 0
+      avg_rpc_per_candidate: candidates.length > 0 ? Math.floor(rpcCalls / candidates.length) : 0
     });
     
     // Guard: If we processed candidates but made 0 RPC calls, something is wrong
