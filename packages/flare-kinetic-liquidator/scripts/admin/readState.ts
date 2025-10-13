@@ -1,4 +1,5 @@
-import { ethers } from "hardhat";
+import hre from "hardhat";
+const { ethers } = hre;
 
 async function main() {
   const exec = process.env.FLASH_EXECUTOR_V3!;
@@ -7,8 +8,6 @@ async function main() {
   console.log("executor:", exec);
   console.log("owner:", await C.owner());
   console.log("paused:", await C.paused());
-  // if beneficiary is declared `public immutable`, this works:
-  try { console.log("beneficiary:", await (C as any).beneficiary()); } catch { console.log("beneficiary: <immutable, not exposed>"); }
+  try { console.log("beneficiary:", await (C as any).beneficiary()); } catch { console.log("beneficiary: <immutable>"); }
 }
 main().catch(e=>{console.error(e);process.exit(1);});
-

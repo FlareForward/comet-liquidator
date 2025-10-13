@@ -1,18 +1,14 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
     "outDir": "dist",
-    "rootDir": ".",
-    "strict": true,
+    "module": "commonjs",
+    "target": "es2020",
+    "moduleResolution": "node",
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "strict": true
   },
-  "include": [
-    "src/**/*.ts",
-    "scripts/**/*.ts"
-  ]
+  "include": ["src/**/*.ts"],
+  "exclude": ["scripts/**", "node_modules"]
 }
-
-
