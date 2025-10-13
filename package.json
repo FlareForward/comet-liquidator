@@ -5,7 +5,10 @@
   "license": "MIT",
   "scripts": {
     "build": "hardhat compile",
-    "liquidator": "hardhat run scripts/liquidation_bot/index.ts"
+    "liquidator": "hardhat run scripts/liquidation_bot/index.ts",
+    "build:flare": "cd packages/flare-kinetic-liquidator && tsc -p tsconfig.json",
+    "deploy:flash": "pwsh packages/flare-kinetic-liquidator/scripts/deploy.ps1",
+    "start:flare": "pwsh packages/flare-kinetic-liquidator/scripts/run.ps1"
   },
   "dependencies": {
     "@compound-finance/sleuth": "^1.0.1-alpha8",
