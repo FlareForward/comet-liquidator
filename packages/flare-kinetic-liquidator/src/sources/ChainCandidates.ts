@@ -19,19 +19,43 @@ export async function chainBorrowerSweep(
     try {
       for (const k of kTokens) {
         const c = new Contract(k, cTokenAbi, prov);
-        const ev = c.getEvent("Borrow");
-        const logs = await c.queryFilter(ev, start, end);
         
-        for (const lg of logs) {
-          // EventLog has args, Log does not - check interface
+        // Scan both Borrow and LiquidateBorrow events
+        const evBorrow = c.getEvent("Borrow");
+        const evLiq = c.getEvent("LiquidateBorrow");
+        
+        const logsB = await c.queryFilter(evBorrow, start, end);
+        const logsL = await c.queryFilter(evLiq, start, end);
+        
+        // Process Borrow events
+        for (const lg of logsB) {
           if ('args' in lg && lg.args) {
             const b = (lg.args as any)?.borrower as string;
-            if (b) seen.add(b.toLowerCase());
+            if (b) {
+              seen.add(b.toLowerCase());
+              if (process.env.DEBUG_CANDIDATES === "1") {
+                console.log(`[ChainSweep] Borrow borrower: ${b}`);
+              }
+            }
           }
         }
         
-        if (logs.length > 0) {
-          console.log(`[ChainSweep] ${k}: found ${logs.length} Borrow events in blocks ${start}-${end}`);
+        // Process LiquidateBorrow events (borrowers who were liquidated may still be underwater)
+        for (const lg of logsL) {
+          if ('args' in lg && lg.args) {
+            const b = (lg.args as any)?.borrower as string;
+            if (b) {
+              seen.add(b.toLowerCase());
+              if (process.env.DEBUG_CANDIDATES === "1") {
+                console.log(`[ChainSweep] LiquidateBorrow borrower: ${b}`);
+              }
+            }
+          }
+        }
+        
+        const totalEvents = logsB.length + logsL.length;
+        if (totalEvents > 0) {
+          console.log(`[ChainSweep] ${k}: found ${logsB.length} Borrow + ${logsL.length} LiquidateBorrow events in blocks ${start}-${end}`);
         }
       }
       
