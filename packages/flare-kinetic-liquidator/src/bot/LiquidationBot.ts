@@ -29,6 +29,10 @@ interface BotConfig {
   slippageBps: number;
   flashFeeBps: number;
   v3FeeCandidates: number[];
+  useSubgraph: boolean;
+  subgraphPageSize: number;
+  chainFallbackOnEmpty: boolean;
+  chainSweepLookback: number;
 }
 
 interface ProcessedKey {
@@ -49,7 +53,12 @@ export class LiquidationBot {
   constructor(readonly config: BotConfig) {
     this.provider = new JsonRpcProvider(config.rpcUrl);
     this.comptroller = new ComptrollerAdapter(this.provider, config.comptroller);
-    this.subgraph = new SubgraphCandidates(config.subgraphUrl);
+    this.subgraph = new SubgraphCandidates(
+      config.subgraphUrl,
+      6000,
+      5,
+      config.subgraphPageSize
+    );
     
     if (config.privateKey) {
       this.wallet = new Wallet(config.privateKey, this.provider);
@@ -133,31 +142,49 @@ export class LiquidationBot {
   }
 
   async checkAndLiquidate() {
-    this.log({ event: "fetch_candidates" });
-    let candidates = await this.subgraph.fetch();
-    this.log({ event: "subgraph_candidates", count: candidates.length });
+    this.log({ event: "fetch_candidates", useSubgraph: this.config.useSubgraph });
+    let candidates: any[] = [];
     
-    // Fallback to chain-based discovery if subgraph returns no candidates
-    if (candidates.length === 0 && process.env.CANDIDATE_SOURCE !== "subgraph") {
-      this.log({ event: "chain_fallback_triggered" });
+    // Primary: Subgraph discovery (if enabled)
+    if (this.config.useSubgraph) {
+      try {
+        candidates = await this.subgraph.fetch();
+        this.log({ event: "subgraph_candidates", count: candidates.length });
+      } catch (err: any) {
+        this.log({ event: "subgraph_error", error: err.message });
+      }
+    }
+    
+    // Fallback: Chain-based discovery (if enabled and subgraph returned nothing)
+    const shouldFallback = (
+      candidates.length === 0 && 
+      this.config.chainFallbackOnEmpty && 
+      this.config.chainSweepLookback > 0
+    );
+    
+    if (shouldFallback) {
+      this.log({ event: "chain_fallback_triggered", reason: "subgraph returned no candidates" });
       const tip = await this.provider.getBlockNumber();
-      const lookback = Number(process.env.SCAN_LOOKBACK_BLOCKS || "20000");
-      const fromBlock = Math.max(0, tip - lookback);
+      const fromBlock = Math.max(0, tip - this.config.chainSweepLookback);
       
       this.log({ event: "chain_sweep_start", fromBlock, toBlock: tip, markets: this.markets.length });
       
-      const borrowers = await chainBorrowerSweep(this.provider, this.markets, fromBlock, tip);
-      
-      candidates = borrowers.map(addr => ({
-        address: addr,
-        totalBorrow: "0", // Will be calculated on-chain
-        totalCollateral: "0"
-      }));
-      
-      this.log({ event: "chain_candidates_found", count: candidates.length });
+      try {
+        const borrowers = await chainBorrowerSweep(this.provider, this.markets, fromBlock, tip);
+        
+        candidates = borrowers.map(addr => ({
+          address: addr,
+          totalBorrow: "0", // Will be calculated on-chain
+          totalCollateral: "0"
+        }));
+        
+        this.log({ event: "chain_candidates_found", count: candidates.length });
+      } catch (err: any) {
+        this.log({ event: "chain_sweep_error", error: err.message });
+      }
     }
     
-    // Filter out denylisted candidates early - avoids wasted RPC calls
+    // Filter out denylisted candidates (double-check, subgraph already filters)
     const beforeDenylist = candidates.length;
     candidates = candidates.filter(c => !isDenied(c.address));
     const filtered = beforeDenylist - candidates.length;
