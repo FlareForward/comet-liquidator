@@ -2,6 +2,7 @@ import { JsonRpcProvider, Wallet, formatUnits, parseUnits, Contract } from "ethe
 import { ComptrollerAdapter } from "../adapters/ComptrollerAdapter";
 import { PriceServiceCompound } from "../services/PriceServiceCompound";
 import { SubgraphCandidates } from "../sources/SubgraphCandidates";
+import { chainBorrowerSweep } from "../sources/ChainCandidates";
 import { OnChainValidator } from "./OnChainValidator";
 import { execFlash } from "../strategy/FlashRepayStrategy";
 import { quoteOut, withSlippage } from "../services/Quotes";
@@ -42,6 +43,7 @@ export class LiquidationBot {
   validator?: OnChainValidator;
   wallet?: Wallet;
   processed: Map<string, number> = new Map(); // Idempotence tracking
+  markets: string[] = [];
   
   constructor(readonly config: BotConfig) {
     this.provider = new JsonRpcProvider(config.rpcUrl);
@@ -89,12 +91,16 @@ export class LiquidationBot {
     this.priceService = new PriceServiceCompound(prov, selected.oracle);
     this.validator = new OnChainValidator(prov, this.comptroller, this.priceService);
     
+    // Fetch all markets for chain-based candidate discovery
+    this.markets = await this.comptroller.getAllMarkets();
+    
     this.log({ 
       event: "bot_ready",
       comptroller: selected.addr,
       oracle: selected.oracle,
       closeFactor: (Number(selected.closeFactor) / 1e18).toFixed(4),
       liqIncentive: (Number(selected.liqIncentive) / 1e18).toFixed(4),
+      markets: this.markets.length,
       simulate: this.config.simulate, 
       execute: this.config.execute,
       wallet: this.wallet?.address 
@@ -120,8 +126,30 @@ export class LiquidationBot {
 
   async checkAndLiquidate() {
     this.log({ event: "fetch_candidates" });
-    const candidates = await this.subgraph.fetch();
-    this.log({ event: "candidates_found", count: candidates.length });
+    let candidates = await this.subgraph.fetch();
+    this.log({ event: "subgraph_candidates", count: candidates.length });
+    
+    // Fallback to chain-based discovery if subgraph returns no candidates
+    if (candidates.length === 0 && process.env.CANDIDATE_SOURCE !== "subgraph") {
+      this.log({ event: "chain_fallback_triggered" });
+      const tip = await this.provider.getBlockNumber();
+      const lookback = Number(process.env.SCAN_LOOKBACK_BLOCKS || "20000");
+      const fromBlock = Math.max(0, tip - lookback);
+      
+      this.log({ event: "chain_sweep_start", fromBlock, toBlock: tip, markets: this.markets.length });
+      
+      const borrowers = await chainBorrowerSweep(this.provider, this.markets, fromBlock, tip);
+      
+      candidates = borrowers.map(addr => ({
+        address: addr,
+        totalBorrow: "0", // Will be calculated on-chain
+        totalCollateral: "0"
+      }));
+      
+      this.log({ event: "chain_candidates_found", count: candidates.length });
+    }
+    
+    this.log({ event: "total_candidates", count: candidates.length });
     
     if (!this.validator) return;
     

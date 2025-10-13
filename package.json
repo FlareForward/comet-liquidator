@@ -1,22 +1,12 @@
 {
-  "name": "comet-liquidator",
+  "name": "flare-kinetic-liquidator",
   "version": "1.0.0",
-  "main": "index.js",
   "license": "MIT",
+  "description": "Production-ready Compound-v2 (Kinetic) liquidator for Flare Network",
   "scripts": {
-    "build": "hardhat compile",
-    "liquidator": "hardhat run scripts/liquidation_bot/index.ts",
     "build:flare": "cd packages/flare-kinetic-liquidator && tsc -p tsconfig.json",
     "deploy:flash": "pwsh packages/flare-kinetic-liquidator/scripts/deploy.ps1",
     "start:flare": "pwsh packages/flare-kinetic-liquidator/scripts/run.ps1"
   },
-  "dependencies": {
-    "@compound-finance/sleuth": "^1.0.1-alpha8",
-    "@flashbots/ethers-provider-bundle": "^0.6.2",
-    "@nomiclabs/hardhat-ethers": "^2.2.3",
-    "alchemy-sdk": "^2.9.2",
-    "hardhat": "^2.17.0",
-    "ts-node": "^10.9.1",
-    "typescript": "^5.1.6"
-  }
+  "dependencies": {}
 }
