@@ -1,103 +1,314 @@
-import { Provider } from "ethers";
+import { Provider, Contract } from "ethers";
 import { ComptrollerAdapter } from "../adapters/ComptrollerAdapter";
-import { CTokenAdapter } from "../adapters/CTokenAdapter";
 import { PriceServiceCompound } from "../services/PriceServiceCompound";
-import { healthFactor } from "../services/HealthFactor";
-import { accountLiquidity, MarketInfo } from "../services/AccountLiquidity";
+import { borrowUsd18WithOracle } from "../services/price";
 import { Candidate } from "../sources/SubgraphCandidates";
 import { isDenied } from "../lib/denylist";
-import cTokenAbi from "../abi/ctoken.json";
 
 export interface ValidatedCandidate extends Candidate {
   healthFactor: number;
-  markets: Array<{
-    kToken: string;
-    underlying: string;
-    decimals: number;
-    borrowBalance: bigint;
-    collateralBalance: bigint;
-    price: string;
-    collateralFactor: number;
-  }>;
+  liquidity: bigint;
+  shortfall: bigint;
+  totalBorrowUSD: bigint;
+  totalCollateralUSD: bigint;
+  assetsIn: string[];
+  rpcCalls: number;
 }
 
+// Comptroller ABI for on-chain checks
+const COMPTROLLER_ABI = [
+  "function getAssetsIn(address) view returns (address[])",
+  "function getAccountLiquidity(address) view returns (uint256, uint256, uint256)",
+  "function oracle() view returns (address)"
+];
+
+// CToken ABI
+const CTOKEN_ABI = [
+  "function underlying() view returns (address)",
+  "function borrowBalanceStored(address) view returns (uint256)"
+];
+
+// Oracle ABI
+const ORACLE_ABI = [
+  "function getUnderlyingPrice(address) view returns (uint256)"
+];
+
+// ERC20 ABI
+const ERC20_ABI = [
+  "function decimals() view returns (uint8)"
+];
+
 export class OnChainValidator {
+  private rpcCallCount = 0;
+  private comptrollerContract: Contract;
+  private oracleContract: Contract | null = null;
+  private debugCount = 0;
+
   constructor(
     readonly provider: Provider,
     readonly comptroller: ComptrollerAdapter,
     readonly priceService: PriceServiceCompound
-  ) {}
+  ) {
+    // Assert HF_SOURCE is chain
+    if (process.env.HF_SOURCE && process.env.HF_SOURCE !== "chain") {
+      throw new Error(`HF_SOURCE must be 'chain', got '${process.env.HF_SOURCE}'`);
+    }
+    
+    this.comptrollerContract = new Contract(
+      comptroller.comptroller,
+      COMPTROLLER_ABI,
+      provider
+    );
+  }
+
+  async init() {
+    // Get oracle address
+    const oracleAddr = await this.comptrollerContract.oracle();
+    this.rpcCallCount++;
+    this.oracleContract = new Contract(oracleAddr, ORACLE_ABI, this.provider);
+    console.log(`[OnChainValidator] Comptroller=${this.comptroller.comptroller} Oracle=${oracleAddr}`);
+  }
+
+  getRpcCallCount(): number {
+    return this.rpcCallCount;
+  }
+
+  resetRpcCallCount(): void {
+    this.rpcCallCount = 0;
+  }
+
+  /**
+   * Calculate borrow USD using proper oracle price scaling
+   * Formula: borrowUSD = (borrowRaw * priceMantissa) / 1e36
+   * 
+   * Oracle prices are in 1e(36 - uDecimals) format
+   * Borrows are in 1e(uDecimals) format
+   * Result is in 1e18 USD
+   */
+  private async borrowUsdFor(user: string, cToken: string): Promise<{ borrowUsd: bigint; decimals: number; price: bigint; borrow: bigint }> {
+    if (!this.oracleContract) throw new Error("Oracle not initialized");
+    
+    const cTokenContract = new Contract(cToken, CTOKEN_ABI, this.provider);
+    
+    // Get underlying address
+    const underlying = await cTokenContract.underlying();
+    this.rpcCallCount++;
+    
+    // Get underlying decimals (for logging/debugging)
+    const underlyingContract = new Contract(underlying, ERC20_ABI, this.provider);
+    const decimals = await underlyingContract.decimals();
+    this.rpcCallCount++;
+    
+    // Get oracle price - PASS CTOKEN NOT UNDERLYING!
+    // Oracle interface: getUnderlyingPrice(address cToken) returns uint256
+    const priceMantissa = BigInt(await this.oracleContract.getUnderlyingPrice(cToken));
+    this.rpcCallCount++;
+    
+    // Check for missing price feed
+    if (priceMantissa === 0n) {
+      console.warn(`[OnChainValidator] Missing price feed for cToken ${cToken}`);
+      return { borrowUsd: 0n, decimals, price: 0n, borrow: 0n };
+    }
+    
+    // Get borrow balance (1e(uDecimals))
+    const borrowRaw = BigInt(await cTokenContract.borrowBalanceStored(user));
+    this.rpcCallCount++;
+    
+    // Calculate USD: (borrowRaw * priceMantissa) / 1e36
+    const borrowUsd = (borrowRaw * priceMantissa) / 10n**36n;
+    
+    return { borrowUsd, decimals, price: priceMantissa, borrow: borrowRaw };
+  }
+
+  /**
+   * Debug logging for one user to verify USD math
+   */
+  private async debugUser(user: string) {
+    if (!this.oracleContract) return;
+    
+    console.log(`\n=== DEBUG USER ${user} ===`);
+    const assets = await this.comptrollerContract.getAssetsIn(user);
+    console.log(`assetsIn: ${JSON.stringify(assets)}`);
+    
+    for (const c of assets) {
+      try {
+        const cTokenContract = new Contract(c, CTOKEN_ABI, this.provider);
+        const u = await cTokenContract.underlying();
+        
+        const underlyingContract = new Contract(u, ERC20_ABI, this.provider);
+        const [udec, price, borrow] = await Promise.all([
+          underlyingContract.decimals(),
+          this.oracleContract.getUnderlyingPrice(c),
+          cTokenContract.borrowBalanceStored(user),
+        ]);
+        
+        const usd = (BigInt(borrow) * BigInt(price)) / 10n**36n;
+        
+        console.log({
+          cToken: c,
+          underlying: u,
+          decimals: udec,
+          price: price.toString(),
+          borrowRaw: borrow.toString(),
+          borrowUSD: usd.toString()
+        });
+      } catch (err: any) {
+        console.error(`Debug failed for cToken ${c}: ${err.message}`);
+      }
+    }
+    
+    const [, liq, short] = await this.comptrollerContract.getAccountLiquidity(user);
+    console.log({ liquidity: liq.toString(), shortfall: short.toString() });
+    console.log(`=== END DEBUG ===\n`);
+  }
 
   async validate(candidate: Candidate, minHealthFactor: number): Promise<ValidatedCandidate | null> {
     // Early exit for denylisted addresses - saves RPC calls
     if (isDenied(candidate.address)) {
-      console.log(`[OnChainValidator] Skipping denylisted address: ${candidate.address}`);
       return null;
     }
     
+    // Debug first few candidates
+    const shouldDebug = this.debugCount < 2;
+    if (shouldDebug) {
+      this.debugCount++;
+    }
+    
     try {
-      const markets = await this.comptroller.getAllMarkets();
-      const params = await this.comptroller.getParams();
+      // Step 1: Get user's markets (getAssetsIn)
+      // Try multiple comptrollers if UNITROLLER_LIST provided
+      const unitrollerList = (process.env.UNITROLLER_LIST || this.comptroller.comptroller)
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean);
       
-      console.log(`[OnChainValidator] Found ${markets.length} markets from comptroller`);
+      let scope: { compAddr: string; assets: string[]; oracle: string } | null = null;
+      for (const compAddr of unitrollerList) {
+        const comp = new Contract(compAddr, [
+          "function getAssetsIn(address) view returns (address[])",
+          "function oracle() view returns (address)"
+        ], this.provider);
+        try {
+          const assets = await comp.getAssetsIn(candidate.address);
+          this.rpcCallCount++;
+          if (assets.length) {
+            const oracle = await comp.oracle();
+            this.rpcCallCount++;
+            scope = { compAddr, assets, oracle };
+            break;
+          }
+        } catch {}
+      }
       
-      const marketInfos: MarketInfo[] = [];
-      const marketData = [];
-
-      for (const kToken of markets) {
-        const adapter = new CTokenAdapter(this.provider, kToken);
-        const info = await this.comptroller.marketInfo(kToken);
-        
-        if (!info.isListed) {
-          console.log(`[OnChainValidator] Market ${kToken} is not listed, skipping`);
-          continue;
-        }
-        
-        const underlyingData = await adapter.underlying();
-        const price = await this.priceService.priceOf(kToken);
-        
-        marketInfos.push({
-          kToken,
-          underlying: underlyingData.addr,
-          collateralFactor: info.collateralFactor,
-          decimals: underlyingData.decimals,
-          price
-        });
-        
-        const borrow = await adapter.borrowBalanceStored(candidate.address);
-        
-        if (borrow > 0n) {
-          marketData.push({
-            kToken,
-            underlying: underlyingData.addr,
-            decimals: underlyingData.decimals,
-            borrowBalance: borrow,
-            collateralBalance: 0n, // Will be filled by accountLiquidity
-            price,
-            collateralFactor: info.collateralFactor
-          });
-        }
+      const assetsIn = scope?.assets || [];
+      
+      if (assetsIn.length === 0) {
+        console.log(`[OnChainValidator] ${candidate.address}: no_assets_in (not using any markets)`);
+        return null;
       }
 
-      // Calculate real account liquidity with collateral
-      const { col, bor } = await accountLiquidity(candidate.address, marketInfos, {
-        prov: this.provider,
-        ctokenAbi: cTokenAbi
-      });
+      // Step 2: Calculate total borrow USD using proper price normalization
+      let totalBorrowUSD = 0n;
+      let rpcCallsForBorrows = 0;
+      const borrowDetails: Array<{ cToken: string; borrowUSD: bigint; decimals: number; price: bigint; borrow: bigint }> = [];
+      
+      const excluded = (process.env.EXCLUDED_MARKETS || "")
+        .split(",")
+        .map(s => s.trim().toLowerCase())
+        .filter(Boolean);
 
-      if (bor === 0n) return null;
+      for (const cToken of assetsIn) {
+        if (excluded.includes(cToken.toLowerCase())) {
+          console.warn(`[OnChainValidator] Skipping excluded market ${cToken}`);
+          continue;
+        }
+        try {
+          const usd = await borrowUsd18WithOracle(candidate.address, cToken, this.provider, scope!.oracle);
+          rpcCallsForBorrows += 2; // price + borrow
+          
+          if (usd > 0n) {
+            totalBorrowUSD += usd;
+            borrowDetails.push({ 
+              cToken, 
+              borrowUSD: usd,
+              decimals: 0,
+              price: 0n,
+              borrow: 0n
+            });
+          }
+        } catch (err: any) {
+          console.warn(`[OnChainValidator] ${candidate.address}: borrow calc failed for ${cToken}: ${err.message}`);
+        }
+      }
       
-      const hf = healthFactor(col, bor);
+      // Log detailed info for first few candidates
+      if (shouldDebug && borrowDetails.length > 0) {
+        console.log(`[OnChainValidator] ${candidate.address} borrow details:`, 
+          borrowDetails.map(d => ({
+            cToken: d.cToken,
+            decimals: d.decimals,
+            price: d.price.toString(),
+            borrow: d.borrow.toString(),
+            borrowUSD: d.borrowUSD.toString()
+          }))
+        );
+      }
+
+      // Apply minimum debt threshold
+      const minDebtUSD = BigInt(process.env.DEBT_MIN_USD || "1") * (10n ** 18n);
       
-      if (hf >= minHealthFactor) return null;
+      if (totalBorrowUSD === 0n) {
+        console.log(`[OnChainValidator] ${candidate.address}: no_debt_chain (assetsIn=${assetsIn.length}, totalBorrowUSD=0)`);
+        return null;
+      }
+
+      if (totalBorrowUSD < minDebtUSD) {
+        console.log(`[OnChainValidator] ${candidate.address}: debt_too_small (assetsIn=${assetsIn.length}, totalBorrowUSD=${totalBorrowUSD}, min=${minDebtUSD})`);
+        return null;
+      }
+
+      console.log(`[OnChainValidator] ${candidate.address}: has_debt (assetsIn=${assetsIn.length}, totalBorrowUSD=${totalBorrowUSD})`);
+
+      // Debug logging for first few candidates
+      if (shouldDebug) {
+        await this.debugUser(candidate.address);
+      }
+
+      // Step 3: Get account liquidity (error, liquidity, shortfall) from the owning comptroller
+      const owningComp = new Contract(scope!.compAddr, ["function getAccountLiquidity(address) view returns (uint256,uint256,uint256)"], this.provider);
+      const [error, liquidity, shortfall] = await owningComp.getAccountLiquidity(candidate.address);
+      this.rpcCallCount++;
+
+      if (error !== 0n) {
+        console.error(`[OnChainValidator] ${candidate.address}: getAccountLiquidity error=${error}`);
+        return null;
+      }
+
+      // shortfall > 0 means liquidatable (HF < 1.0)
+      if (shortfall === 0n) {
+        console.log(`[OnChainValidator] ${candidate.address}: healthy (liquidity=${liquidity}, shortfall=0)`);
+        return null;
+      }
+
+      // Calculate health factor: HF = collateral / (collateral + shortfall)
+      const totalValue = liquidity + shortfall;
+      const healthFactor = totalValue === 0n ? 0 : Number(liquidity) / Number(totalValue);
+      
+      console.log(`[OnChainValidator] ${candidate.address}: LIQUIDATABLE (HF=${healthFactor.toFixed(4)}, liquidity=${liquidity}, shortfall=${shortfall})`);
 
       return {
         ...candidate,
-        healthFactor: hf,
-        markets: marketData
+        healthFactor,
+        liquidity,
+        shortfall,
+        totalBorrowUSD,
+        totalCollateralUSD: liquidity,
+        assetsIn,
+        rpcCalls: this.rpcCallCount
       };
+
     } catch (err: any) {
-      console.error(`Failed to validate ${candidate.address}:`, err.message);
+      console.error(`[OnChainValidator] ${candidate.address}: validation error: ${err.message}`);
       return null;
     }
   }

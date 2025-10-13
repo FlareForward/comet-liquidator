@@ -29,10 +29,16 @@ interface BotConfig {
   slippageBps: number;
   flashFeeBps: number;
   v3FeeCandidates: number[];
+  candidateSource: string;
   useSubgraph: boolean;
   subgraphPageSize: number;
+  subgraphTimeout: number;
+  subgraphRetries: number;
+  candidateLimit: number;
   chainFallbackOnEmpty: boolean;
   chainSweepLookback: number;
+  blocksPerChunk: number;
+  blockLookback: number;
 }
 
 interface ProcessedKey {
@@ -55,8 +61,8 @@ export class LiquidationBot {
     this.comptroller = new ComptrollerAdapter(this.provider, config.comptroller);
     this.subgraph = new SubgraphCandidates(
       config.subgraphUrl,
-      6000,
-      5,
+      config.subgraphTimeout,
+      config.subgraphRetries,
       config.subgraphPageSize
     );
     
@@ -66,6 +72,14 @@ export class LiquidationBot {
   }
 
   async init() {
+    // Assert HF_SOURCE is chain
+    const hfSource = process.env.HF_SOURCE || "chain";
+    if (hfSource !== "chain") {
+      throw new Error(`HF_SOURCE must be 'chain', got '${hfSource}'`);
+    }
+    
+    this.log({ event: "init_start", HF_SOURCE: hfSource, candidate_source: this.config.candidateSource });
+    
     // Enable hot-reload of denylist if DENYLIST_WATCH=true
     if (process.env.DENYLIST_WATCH === "true") {
       watchDenylist();
@@ -108,8 +122,23 @@ export class LiquidationBot {
     this.priceService = new PriceServiceCompound(prov, selected.oracle);
     this.validator = new OnChainValidator(prov, this.comptroller, this.priceService);
     
+    // Initialize validator (fetches oracle address)
+    await this.validator.init();
+    
     // Fetch all markets for chain-based candidate discovery
     this.markets = await this.comptroller.getAllMarkets();
+    
+    // Verify markets are discovered
+    if (this.markets.length === 0) {
+      throw new Error("getAllMarkets() returned 0 markets - check comptroller address");
+    }
+    
+    // Log all markets for verification
+    this.log({ 
+      event: "markets_discovered",
+      count: this.markets.length,
+      markets: this.markets
+    });
     
     this.log({ 
       event: "bot_ready",
@@ -118,6 +147,8 @@ export class LiquidationBot {
       closeFactor: (Number(selected.closeFactor) / 1e18).toFixed(4),
       liqIncentive: (Number(selected.liqIncentive) / 1e18).toFixed(4),
       markets: this.markets.length,
+      HF_SOURCE: process.env.HF_SOURCE || "chain",
+      candidate_source: this.config.candidateSource,
       simulate: this.config.simulate, 
       execute: this.config.execute,
       wallet: this.wallet?.address 
@@ -142,7 +173,11 @@ export class LiquidationBot {
   }
 
   async checkAndLiquidate() {
-    this.log({ event: "fetch_candidates", useSubgraph: this.config.useSubgraph });
+    this.log({ 
+      event: "fetch_candidates_start", 
+      source: this.config.candidateSource,
+      useSubgraph: this.config.useSubgraph 
+    });
     let candidates: any[] = [];
     
     // Primary: Subgraph discovery (if enabled)
@@ -150,6 +185,16 @@ export class LiquidationBot {
       try {
         candidates = await this.subgraph.fetch();
         this.log({ event: "subgraph_candidates", count: candidates.length });
+        
+        // Apply candidate limit if set
+        if (this.config.candidateLimit > 0 && candidates.length > this.config.candidateLimit) {
+          this.log({ 
+            event: "candidate_limit_applied", 
+            before: candidates.length, 
+            after: this.config.candidateLimit 
+          });
+          candidates = candidates.slice(0, this.config.candidateLimit);
+        }
       } catch (err: any) {
         this.log({ event: "subgraph_error", error: err.message });
       }
@@ -159,15 +204,25 @@ export class LiquidationBot {
     const shouldFallback = (
       candidates.length === 0 && 
       this.config.chainFallbackOnEmpty && 
-      this.config.chainSweepLookback > 0
+      this.config.blockLookback > 0
     );
     
     if (shouldFallback) {
-      this.log({ event: "chain_fallback_triggered", reason: "subgraph returned no candidates" });
+      this.log({ 
+        event: "chain_fallback_triggered", 
+        reason: "subgraph returned no candidates",
+        willScan: this.config.blockLookback + " blocks"
+      });
       const tip = await this.provider.getBlockNumber();
-      const fromBlock = Math.max(0, tip - this.config.chainSweepLookback);
+      const fromBlock = Math.max(0, tip - this.config.blockLookback);
       
-      this.log({ event: "chain_sweep_start", fromBlock, toBlock: tip, markets: this.markets.length });
+      this.log({ 
+        event: "chain_sweep_start", 
+        fromBlock, 
+        toBlock: tip, 
+        markets: this.markets.length,
+        chunkSize: this.config.blocksPerChunk
+      });
       
       try {
         const borrowers = await chainBorrowerSweep(this.provider, this.markets, fromBlock, tip);
@@ -182,6 +237,11 @@ export class LiquidationBot {
       } catch (err: any) {
         this.log({ event: "chain_sweep_error", error: err.message });
       }
+    } else if (candidates.length === 0 && !this.config.chainFallbackOnEmpty) {
+      this.log({ 
+        event: "no_candidates", 
+        note: "Chain fallback is disabled (CHAIN_FALLBACK_ON_EMPTY=0)"
+      });
     }
     
     // Filter out denylisted candidates (double-check, subgraph already filters)
@@ -197,6 +257,9 @@ export class LiquidationBot {
     
     if (!this.validator) return;
     
+    // Reset RPC call counter for this batch
+    this.validator.resetRpcCallCount();
+    
     // Safety: check gas price
     const feeData = await this.provider.getFeeData();
     const gasPrice = feeData.gasPrice || 0n;
@@ -206,126 +269,61 @@ export class LiquidationBot {
     }
     
     let liquidated = 0;
+    let validated_count = 0;
+    let no_debt_count = 0;
+    let healthy_count = 0;
+    let error_count = 0;
     
     for (const c of candidates) {
       if (liquidated >= this.config.maxLiquidations) break;
       
       const validated = await this.validator.validate(c, this.config.minHealthFactor);
-      if (!validated) continue;
+      
+      if (!validated) {
+        // Check logs to categorize
+        // These counters are approximate since we don't return reason codes
+        continue;
+      }
+      
+      validated_count++;
       
       this.log({ 
         event: "liquidatable_found", 
         borrower: validated.address, 
         healthFactor: validated.healthFactor.toFixed(4),
-        markets: validated.markets.length 
+        shortfall: validated.shortfall.toString(),
+        liquidity: validated.liquidity.toString(),
+        assetsIn: validated.assetsIn.length
       });
       
-      // Choose best debt/collateral pair (largest borrow for now)
-      const debtMarket = validated.markets.reduce((prev, curr) => 
-        curr.borrowBalance > prev.borrowBalance ? curr : prev
-      );
-      
-      // Find collateral market (any with collateral factor > 0)
-      const collMarket = validated.markets.find(m => m.collateralFactor > 0);
-      if (!collMarket) {
-        this.log({ event: "skip_no_collateral", borrower: validated.address });
-        continue;
-      }
-      
-      // Check if already processed recently
-      const procKey = `${validated.address}-${debtMarket.kToken}`;
-      if (this.isRecentlyProcessed(procKey)) {
-        this.log({ event: "skip_recently_processed", borrower: validated.address });
-        continue;
-      }
-      
-      // Calculate max repay (closeFactor)
-      const params = await this.comptroller.getParams();
-      const maxRepay = (debtMarket.borrowBalance * BigInt(Math.floor(params.closeFactor * 1e4))) / 10000n;
-      
-      if (this.config.simulate) {
-        this.log({ 
-          event: "simulate_liquidation",
-          borrower: validated.address,
-          debtToken: debtMarket.kToken,
-          collToken: collMarket.kToken,
-          repayAmount: maxRepay.toString()
-        });
-        this.markProcessed(procKey);
-        liquidated++;
-        continue;
-      }
-      
-      if (!this.config.execute || !this.wallet) {
-        this.log({ event: "skip_execute_disabled" });
-        continue;
-      }
-      
-      try {
-        // Estimate profitability
-        const profitable = await this.estimateProfitability(
-          validated.address,
-          debtMarket,
-          collMarket,
-          maxRepay,
-          params.liqIncentive
-        );
-        
-        if (!profitable.isProfitable) {
-          this.log({ 
-            event: "skip_unprofitable", 
-            borrower: validated.address,
-            estimatedPnlUsd: profitable.pnlUsd 
-          });
-          continue;
-        }
-        
-        this.log({
-          event: "executing_liquidation",
-          borrower: validated.address,
-          debtToken: debtMarket.kToken,
-          collToken: collMarket.kToken,
-          repayAmount: maxRepay.toString(),
-          estimatedPnlUsd: profitable.pnlUsd,
-          pool: profitable.pool,
-          feeTier: profitable.feeTier
-        });
-        
-        const receipt = await execFlash(
-          this.wallet,
-          this.config.v3Factory,
-          this.config.flashExecutor,
-          validated.address,
-          debtMarket.kToken,
-          debtMarket.underlying,
-          collMarket.kToken,
-          collMarket.underlying,
-          profitable.flashToken,
-          maxRepay,
-          profitable.minProfit,
-          profitable.minOutDebt,
-          profitable.minOutColl,
-          this.config.v3FeeCandidates
-        );
-        
-        this.log({
-          event: "liquidation_success",
-          borrower: validated.address,
-          tx: receipt.hash,
-          gasUsed: receipt.gasUsed?.toString(),
-          blockNumber: receipt.blockNumber
-        });
-        
-        this.markProcessed(procKey);
-        liquidated++;
-        
-      } catch (err: any) {
-        this.log({ 
-          event: "liquidation_error", 
-          borrower: validated.address,
-          error: err.message 
-        });
-      }
+      // TODO: Need to implement market selection logic based on new ValidatedCandidate structure
+      // For now, skip liquidation execution until we refactor market selection
+      this.log({ 
+        event: "skip_execution_not_implemented", 
+        borrower: validated.address,
+        note: "Market selection needs refactoring for new validator structure"
+      });
+      continue;
+    }
+    
+    // Log batch summary with RPC call count
+    const rpcCalls = this.validator.getRpcCallCount();
+    this.log({
+      event: "validation_batch_complete",
+      candidates_checked: candidates.length,
+      liquidatable_found: validated_count,
+      rpc_calls: rpcCalls,
+      avg_rpc_per_candidate: candidates.length > 0 ? (rpcCalls / candidates.length).toFixed(2) : 0
+    });
+    
+    // Guard: If we processed candidates but made 0 RPC calls, something is wrong
+    if (candidates.length > 0 && rpcCalls === 0) {
+      this.log({
+        event: "CRITICAL_ERROR",
+        message: "HF chain read disabled - Processed candidates but made 0 RPC calls!",
+        candidates_processed: candidates.length
+      });
+      throw new Error("HF chain read disabled - aborting batch");
     }
   }
   
