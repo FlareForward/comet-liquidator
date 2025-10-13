@@ -1,5 +1,6 @@
 import * as dotenv from "dotenv";
 import { LiquidationBot } from "./bot/LiquidationBot";
+import { parseUnits } from "ethers";
 
 dotenv.config({ path: "../../.env" });
 
@@ -9,12 +10,18 @@ const config = {
   subgraphUrl: process.env.SUBGRAPH_URL!,
   v3Factory: process.env.V3_FACTORY!,
   flashExecutor: process.env.FLASH_EXECUTOR_V3!,
+  dexRouter: process.env.DEX_ROUTER!,
   privateKey: process.env.DEPLOYER_KEY,
   minHealthFactor: parseFloat(process.env.MIN_HEALTH_FACTOR || "1.1"),
   minProfitUsd: parseFloat(process.env.MIN_PROFIT_USD || "50"),
   checkInterval: parseInt(process.env.CHECK_INTERVAL || "30000"),
   simulate: process.env.SIMULATE === "true",
-  maxLiquidations: parseInt(process.env.MAX_LIQUIDATIONS || "1")
+  execute: process.env.EXECUTE === "true",
+  maxLiquidations: parseInt(process.env.MAX_LIQUIDATIONS || "1"),
+  maxGasPrice: parseUnits(process.env.MAX_GAS_PRICE_GWEI || "100", "gwei"),
+  slippageBps: parseInt(process.env.SLIPPAGE_BPS || "30"),
+  flashFeeBps: parseInt(process.env.FLASH_FEE_BPS || "5"),
+  v3FeeCandidates: (process.env.V3_FEE_CANDIDATES || "100,500,3000").split(",").map(x => parseInt(x))
 };
 
 console.log("Starting Flare Kinetic Liquidator Bot...");

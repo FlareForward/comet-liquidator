@@ -3,16 +3,20 @@ import { ComptrollerAdapter } from "../adapters/ComptrollerAdapter";
 import { CTokenAdapter } from "../adapters/CTokenAdapter";
 import { PriceServiceCompound } from "../services/PriceServiceCompound";
 import { healthFactor } from "../services/HealthFactor";
+import { accountLiquidity, MarketInfo } from "../services/AccountLiquidity";
 import { Candidate } from "../sources/SubgraphCandidates";
+import cTokenAbi from "../abi/ctoken.json";
 
 export interface ValidatedCandidate extends Candidate {
   healthFactor: number;
   markets: Array<{
     kToken: string;
     underlying: string;
+    decimals: number;
     borrowBalance: bigint;
     collateralBalance: bigint;
     price: string;
+    collateralFactor: number;
   }>;
 }
 
@@ -28,41 +32,50 @@ export class OnChainValidator {
       const markets = await this.comptroller.getAllMarkets();
       const params = await this.comptroller.getParams();
       
-      let totalCollateralUsd = 0n;
-      let totalBorrowUsd = 0n;
+      const marketInfos: MarketInfo[] = [];
       const marketData = [];
 
       for (const kToken of markets) {
         const adapter = new CTokenAdapter(this.provider, kToken);
-        const borrow = await adapter.borrowBalanceStored(candidate.address);
         const info = await this.comptroller.marketInfo(kToken);
         
         if (!info.isListed) continue;
         
+        const underlyingData = await adapter.underlying();
         const price = await this.priceService.priceOf(kToken);
-        const priceBigInt = BigInt(price);
         
-        // Accumulate borrow in 18-dec USD
-        const borrowUsd = (borrow * priceBigInt) / 1_000000_000000_000000n;
-        totalBorrowUsd += borrowUsd;
+        marketInfos.push({
+          kToken,
+          underlying: underlyingData.addr,
+          collateralFactor: info.collateralFactor,
+          decimals: underlyingData.decimals,
+          price
+        });
         
-        // TODO: get actual collateral balance (requires reading cToken balance + exchangeRate)
-        // For now, skip collateral accumulation
+        const borrow = await adapter.borrowBalanceStored(candidate.address);
         
         if (borrow > 0n) {
           marketData.push({
             kToken,
-            underlying: (await adapter.underlying()).addr,
+            underlying: underlyingData.addr,
+            decimals: underlyingData.decimals,
             borrowBalance: borrow,
-            collateralBalance: 0n,
-            price
+            collateralBalance: 0n, // Will be filled by accountLiquidity
+            price,
+            collateralFactor: info.collateralFactor
           });
         }
       }
 
-      if (totalBorrowUsd === 0n) return null;
+      // Calculate real account liquidity with collateral
+      const { col, bor } = await accountLiquidity(candidate.address, marketInfos, {
+        prov: this.provider,
+        ctokenAbi: cTokenAbi
+      });
+
+      if (bor === 0n) return null;
       
-      const hf = healthFactor(totalCollateralUsd, totalBorrowUsd);
+      const hf = healthFactor(col, bor);
       
       if (hf >= minHealthFactor) return null;
 

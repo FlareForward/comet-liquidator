@@ -1,16 +1,26 @@
 # Flare Kinetic Liquidator
 
-Minimal Compound-v2 (Kinetic) liquidator for Flare Network with Uniswap-v3 flash loans via SparkDEX/Enosys.
+Production-ready Compound-v2 (Kinetic) liquidator for Flare Network with Uniswap-v3 flash loans via SparkDEX/Enosys.
 
 ## Architecture
 
 - **Solidity Executor**: `FlashLiquidatorV3.sol` - Flash loan + liquidate + repay + profit extraction
-- **TypeScript Bot**: Main loop with subgraph candidate discovery and on-chain validation
+- **TypeScript Bot**: Main loop with subgraph candidate discovery, on-chain validation, PnL estimation, and safety guards
 - **Windows-Safe**: All scripts use PowerShell (no `&&` or bash)
+
+## Features
+
+✅ Real-time health factor calculation from on-chain data  
+✅ Slippage protection via DEX router quotes  
+✅ Gas price safety guards  
+✅ Idempotence (60s dedup window)  
+✅ JSON structured logging  
+✅ Profitability estimation before execution  
+✅ Multi-fee-tier Uniswap v3 pool discovery  
 
 ## Setup
 
-1. Copy `.env.example` or set these vars in your `.env` at repo root:
+1. Set these vars in your `.env` at repo root:
 
 ```env
 RPC_URL=https://flare-api.flare.network/ext/C/rpc
@@ -18,12 +28,18 @@ KINETIC_COMPTROLLER=0xeC7e541375D70c37262f619162502dB9131d6db5
 SUBGRAPH_URL=https://api.goldsky.com/api/public/project_cmg5ltyqo0x8v01us07lih2dr/subgraphs/kinetic-liquidations/1.0.12/gn
 V3_FACTORY=0x8A2578d23d4C532cC9A98FaD91C0523f5efDE652
 DEX_ROUTER=0x8a1E35F5c98C4E85B36B7B253222eE17773b2781
+V3_FEE_CANDIDATES=100,500,3000
 DEPLOYER_KEY=0xYOUR_PRIVATE_KEY
 PAYOUT_TOKEN_BENEFICIARY=0xYourEOA
 MIN_HEALTH_FACTOR=1.1
 MIN_PROFIT_USD=50
+MAX_GAS_PRICE_GWEI=100
+SLIPPAGE_BPS=30
+FLASH_FEE_BPS=5
 CHECK_INTERVAL=30000
 SIMULATE=true
+EXECUTE=false
+MAX_LIQUIDATIONS=1
 ```
 
 2. Deploy the flash executor:
@@ -73,19 +89,91 @@ npm run start:flare
 - `src/bot/` - Main bot loop and validator
 - `src/main.ts` - Entry point
 
-## TODO
+## Deployment Steps
 
-- [ ] Add collateral balance reading in OnChainValidator
-- [ ] Implement profitability calculation (PnL estimation)
-- [ ] Wire FlashRepayStrategy into bot when profitable
-- [ ] Add slippage guards and gas price checks
-- [ ] Test on Flare mainnet with live data
-- [ ] Add logging and metrics
+### 1. Configure Environment
 
-## Safety
+Edit `.env` with your private key and beneficiary address:
 
-- Always test with `SIMULATE=true` first
-- Set reasonable `MIN_PROFIT_USD` to avoid unprofitable txs
-- Monitor gas prices with `MAX_GAS_PRICE_GWEI`
-- Start with `MAX_LIQUIDATIONS=1` for safety
+```powershell
+$env:DEPLOYER_KEY="0xYOURKEY"
+$env:PAYOUT_TOKEN_BENEFICIARY="0xYourEOA"
+```
+
+### 2. Deploy Flash Executor
+
+```powershell
+npm run deploy:flash
+```
+
+Copy the printed `FLASH_EXECUTOR_V3` address and add to `.env`:
+
+```env
+FLASH_EXECUTOR_V3=0xDeployedAddress
+```
+
+### 3. Build TypeScript
+
+```powershell
+npm run build:flare
+```
+
+### 4. Dry Run (Simulate Mode)
+
+```powershell
+$env:SIMULATE="true"
+$env:EXECUTE="false"
+$env:MAX_LIQUIDATIONS="1"
+npm run start:flare
+```
+
+**Verify:**
+- Oracle resolves and returns valid prices
+- Health factors compute correctly
+- At least one candidate shows as liquidatable
+- PnL estimation shows positive profit
+
+### 5. Live Execution
+
+```powershell
+$env:SIMULATE="false"
+$env:EXECUTE="true"
+$env:MAX_LIQUIDATIONS="1"
+$env:CHECK_INTERVAL="15000"
+npm run start:flare
+```
+
+**Monitor logs for:**
+- `liquidation_success` events with tx hash
+- `pnlUsd` in profit range
+- Gas usage within acceptable limits
+
+### 6. Scale Up
+
+After successful test liquidations:
+
+```powershell
+$env:MAX_LIQUIDATIONS="3"
+$env:MIN_PROFIT_USD="25"
+$env:CHECK_INTERVAL="10000"
+```
+
+## Safety Features
+
+✅ **Gas Price Cap**: Skips if gas > `MAX_GAS_PRICE_GWEI`  
+✅ **Oracle Kill-Switch**: Exits if oracle returns 0 or reverts  
+✅ **Slippage Protection**: Guards swaps with `SLIPPAGE_BPS`  
+✅ **Idempotence**: 60s dedup window prevents double-liquidations  
+✅ **PnL Guard**: Only executes if profit ≥ `MIN_PROFIT_USD`  
+
+## JSON Logging
+
+All events logged as JSON for easy parsing:
+
+```json
+{"timestamp":"2025-10-13T...","event":"liquidation_success","borrower":"0x...","tx":"0x...","pnlUsd":75.5}
+{"timestamp":"2025-10-13T...","event":"skip_unprofitable","borrower":"0x...","estimatedPnlUsd":15.2}
+```
+
+Parse with `jq` or stream to observability platform.
 
