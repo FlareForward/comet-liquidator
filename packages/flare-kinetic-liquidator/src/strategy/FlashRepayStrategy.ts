@@ -20,16 +20,36 @@ export async function execFlash(
   fees: number[]
 ) {
   const prov = w.provider!;
-  const found = await findPool(prov, factory, flashToken, flashToken, fees);
-  if (!found) throw new Error("pool-not-found");
-  const pool = new Contract(found.pool, PoolAbi, prov);
+  
+  // Find a pool where flashToken is part of the pair
+  // Try PRIMARY_FLASH_FALLBACK if configured, otherwise use flashToken itself
+  let chosen: { pool: string; fee: number } | null = null;
+  for (const f of fees) {
+    const primary = process.env.PRIMARY_FLASH_FALLBACK || flashToken;
+    const test = await findPool(prov, factory, flashToken, primary, [f]);
+    if (test) { 
+      chosen = test; 
+      break; 
+    }
+  }
+  
+  if (!chosen) throw new Error("pool-not-found");
+  
   const exec = new Contract(flashExecutor, (FlashAbi as any).abi, w);
   const params = {
-    borrower, kTokenDebt, debtToken, kTokenColl, collUnderlying, flashToken,
-    repayAmount, fee: found.fee, minProfit: minProfitFlashUnits,
-    minOutDebtSwap, minOutCollSwap
+    borrower, 
+    kTokenDebt, 
+    debtToken, 
+    kTokenColl, 
+    collUnderlying, 
+    flashToken,
+    repayAmount, 
+    fee: chosen.fee, 
+    minProfit: minProfitFlashUnits,
+    minOutDebtSwap, 
+    minOutCollSwap
   };
-  const tx = await exec.liquidateWithFlash(pool.address, params, { gasLimit: 6_000_000 });
+  const tx = await exec.liquidateWithFlash(chosen.pool, params, { gasLimit: 6_000_000 });
   return tx.wait();
 }
 

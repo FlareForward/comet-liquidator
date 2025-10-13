@@ -5,6 +5,8 @@ import { SubgraphCandidates } from "../sources/SubgraphCandidates";
 import { OnChainValidator } from "./OnChainValidator";
 import { execFlash } from "../strategy/FlashRepayStrategy";
 import { quoteOut, withSlippage } from "../services/Quotes";
+import { flashProfitToQuote } from "../services/ProfitGuard";
+import { calcRepayAmount, roughSeizedUnderlying } from "../services/LiquidationMath";
 
 interface BotConfig {
   rpcUrl: string;
@@ -242,11 +244,13 @@ export class LiquidationBot {
     pool?: string;
     feeTier?: number;
   }> {
-    // Use debt token as flash token for simplicity
-    const flashToken = debtMarket.underlying;
+    // Use PRIMARY_FLASH_FALLBACK or WFLR as flash token
+    const flashToken = process.env.PRIMARY_FLASH_FALLBACK || process.env.WFLR || debtMarket.underlying;
+    const quoteToken = process.env.PAYOUT_QUOTE_TOKEN || process.env.USDT0!;
     
-    // Calculate seized collateral (repay * liqIncentive)
-    const seizedUnderlying = (repayAmount * BigInt(Math.floor(liqIncentive * 1e4))) / 10000n;
+    // Calculate seized collateral using liquidation math
+    const liqIncentiveMantissa = BigInt(Math.floor(liqIncentive * 1e18));
+    const seizedUnderlying = roughSeizedUnderlying(repayAmount, liqIncentiveMantissa);
     
     // Quote swap paths
     const debtPath = [flashToken, debtMarket.underlying];
@@ -256,7 +260,7 @@ export class LiquidationBot {
     let minOutColl = 0n;
     
     try {
-      // If debt token == flash token, no swap needed
+      // 1) Min-out for flash -> debt
       if (flashToken.toLowerCase() === debtMarket.underlying.toLowerCase()) {
         minOutDebt = repayAmount;
       } else {
@@ -264,7 +268,7 @@ export class LiquidationBot {
         minOutDebt = withSlippage(outDebt, this.config.slippageBps);
       }
       
-      // Quote collateral -> flash token
+      // 2) Min-out for collateral -> flash
       if (collMarket.underlying.toLowerCase() === flashToken.toLowerCase()) {
         minOutColl = seizedUnderlying;
       } else {
@@ -284,22 +288,40 @@ export class LiquidationBot {
       };
     }
     
-    // Calculate PnL: collateral received - repay - flash fee
+    // 3) Calculate PnL: collateral received - repay - flash fee
     const flashFee = (repayAmount * BigInt(this.config.flashFeeBps)) / 10000n;
     const totalCost = repayAmount + flashFee;
-    const estProfit = minOutColl > totalCost ? minOutColl - totalCost : 0n;
+    const estProfitFlash = minOutColl > totalCost ? minOutColl - totalCost : 0n;
     
-    // Convert to USD (use debt token price as proxy)
-    const profitUsd = Number(formatUnits(estProfit, debtMarket.decimals)) * 
-                      Number(formatUnits(debtMarket.price, 18));
+    if (estProfitFlash <= 0n) {
+      return {
+        isProfitable: false,
+        pnlUsd: 0,
+        flashToken,
+        minProfit: 0n,
+        minOutDebt,
+        minOutColl
+      };
+    }
     
+    // 4) Convert profit to USD-like quote token
+    const estProfitQuote = await flashProfitToQuote(
+      this.provider, 
+      this.config.dexRouter, 
+      flashToken, 
+      estProfitFlash, 
+      quoteToken
+    );
+    
+    // Assume quote token is 6-decimal (USDT-like) for USD comparison
+    const profitUsd = Number(formatUnits(estProfitQuote, 6));
     const isProfitable = profitUsd >= this.config.minProfitUsd;
     
     return {
       isProfitable,
       pnlUsd: profitUsd,
       flashToken,
-      minProfit: estProfit,
+      minProfit: estProfitFlash,
       minOutDebt,
       minOutColl
     };
