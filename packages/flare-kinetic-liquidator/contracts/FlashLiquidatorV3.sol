@@ -52,16 +52,41 @@ interface IRouterV2 {
 contract FlashLiquidatorV3 {
   address public immutable factoryV3;
   address public immutable router;
+  address public owner;
   address public beneficiary; // profit sink in PAYOUT_TOKEN
+  bool public paused;
+  uint256 private _locked;
 
   error NoPool();
   error FlashFail();
   error SwapFail();
+  error Paused();
+  error Unauthorized();
+  error ReentrancyGuard();
+
+  modifier onlyOwner() {
+    if (msg.sender != owner) revert Unauthorized();
+    _;
+  }
+
+  modifier nonReentrant() {
+    if (_locked == 1) revert ReentrancyGuard();
+    _locked = 1;
+    _;
+    _locked = 0;
+  }
+
+  modifier whenNotPaused() {
+    if (paused) revert Paused();
+    _;
+  }
 
   constructor(address _factoryV3, address _router, address _beneficiary) {
     factoryV3 = _factoryV3;
     router = _router;
     beneficiary = _beneficiary;
+    owner = msg.sender;
+    _locked = 0;
   }
 
   struct Params {
@@ -79,7 +104,7 @@ contract FlashLiquidatorV3 {
   }
 
   // Entry: choose pool by token ordering
-  function liquidateWithFlash(address pool, Params calldata p) external {
+  function liquidateWithFlash(address pool, Params calldata p) external nonReentrant whenNotPaused {
     require(pool != address(0), "pool=0");
     IUniswapV3Pool(pool).flash(address(this),
       p.flashToken == IUniswapV3Pool(pool).token0() ? p.repayAmount : 0,
@@ -128,6 +153,31 @@ contract FlashLiquidatorV3 {
     uint256 profit = IERC20(p.flashToken).balanceOf(address(this));
     require(profit >= p.minProfit, "minProfit");
     IERC20(p.flashToken).transfer(beneficiary, profit);
+  }
+
+  // === Admin Functions ===
+
+  /// @notice Update beneficiary address
+  function setBeneficiary(address _beneficiary) external onlyOwner {
+    require(_beneficiary != address(0), "zero address");
+    beneficiary = _beneficiary;
+  }
+
+  /// @notice Emergency pause
+  function setPaused(bool _paused) external onlyOwner {
+    paused = _paused;
+  }
+
+  /// @notice Transfer ownership
+  function transferOwnership(address _newOwner) external onlyOwner {
+    require(_newOwner != address(0), "zero address");
+    owner = _newOwner;
+  }
+
+  /// @notice Rescue stuck tokens
+  function rescueTokens(address token, address to, uint256 amount) external onlyOwner {
+    require(to != address(0), "zero address");
+    IERC20(token).transfer(to, amount);
   }
 }
 
