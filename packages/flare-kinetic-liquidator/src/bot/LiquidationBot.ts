@@ -1,4 +1,4 @@
-import { JsonRpcProvider, Wallet, formatUnits, parseUnits } from "ethers";
+import { JsonRpcProvider, Wallet, formatUnits, parseUnits, Contract } from "ethers";
 import { ComptrollerAdapter } from "../adapters/ComptrollerAdapter";
 import { PriceServiceCompound } from "../services/PriceServiceCompound";
 import { SubgraphCandidates } from "../sources/SubgraphCandidates";
@@ -7,6 +7,7 @@ import { execFlash } from "../strategy/FlashRepayStrategy";
 import { quoteOut, withSlippage } from "../services/Quotes";
 import { flashProfitToQuote } from "../services/ProfitGuard";
 import { calcRepayAmount, roughSeizedUnderlying } from "../services/LiquidationMath";
+import ComptrollerAbi from "../abi/comptroller.json";
 
 interface BotConfig {
   rpcUrl: string;
@@ -53,19 +54,47 @@ export class LiquidationBot {
   }
 
   async init() {
-    const params = await this.comptroller.getParams();
-    this.log({ event: "init", comptroller: params });
+    const prov = this.provider;
+    const list = (process.env.UNITROLLER_LIST || this.config.comptroller)
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean);
     
-    // Safety: verify oracle is valid
-    if (!params.oracle || params.oracle === "0x0000000000000000000000000000000000000000") {
-      throw new Error("Invalid oracle address from comptroller");
+    let selected: { addr: string; closeFactor: bigint; liqIncentive: bigint; oracle: string } | null = null;
+
+    for (const addr of list) {
+      const c = new Contract(addr, ComptrollerAbi, prov);
+      try {
+        const [cf, li, orc] = await Promise.all([
+          c.closeFactorMantissa(),
+          c.liquidationIncentiveMantissa(),
+          c.oracle()
+        ]);
+        if (orc && orc !== "0x0000000000000000000000000000000000000000" && cf > 0n && li > 0n) {
+          selected = { addr, closeFactor: BigInt(cf), liqIncentive: BigInt(li), oracle: orc };
+          this.log({ event: "valid_proxy_found", addr, oracle: orc });
+          break;
+        }
+      } catch (err: any) {
+        this.log({ event: "proxy_check_failed", addr, error: err.message });
+      }
     }
+
+    if (!selected) throw new Error("No valid Comptroller proxy found in UNITROLLER_LIST");
+
+    // Update config to use the valid proxy
+    this.config.comptroller = selected.addr;
+    this.comptroller = new ComptrollerAdapter(prov, selected.addr);
     
-    this.priceService = new PriceServiceCompound(this.provider, params.oracle);
-    this.validator = new OnChainValidator(this.provider, this.comptroller, this.priceService);
+    this.priceService = new PriceServiceCompound(prov, selected.oracle);
+    this.validator = new OnChainValidator(prov, this.comptroller, this.priceService);
     
     this.log({ 
-      event: "bot_ready", 
+      event: "bot_ready",
+      comptroller: selected.addr,
+      oracle: selected.oracle,
+      closeFactor: (Number(selected.closeFactor) / 1e18).toFixed(4),
+      liqIncentive: (Number(selected.liqIncentive) / 1e18).toFixed(4),
       simulate: this.config.simulate, 
       execute: this.config.execute,
       wallet: this.wallet?.address 
