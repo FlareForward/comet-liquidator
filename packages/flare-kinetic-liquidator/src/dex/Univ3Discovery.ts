@@ -1,7 +1,7 @@
-import { Contract, providers } from "ethers";
+import { Contract, Provider } from "ethers";
 import FactoryAbi from "../abi/univ3factory.json";
 
-export async function findPool(provider: providers.Provider, factory: string, a: string, b: string, fees: number[]) {
+export async function findPool(provider: Provider, factory: string, a: string, b: string, fees: number[]) {
   const F = new Contract(factory, FactoryAbi, provider);
   for (const f of fees) {
     const p = await F.getPool(a, b, f);

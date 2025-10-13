@@ -1,10 +1,10 @@
-import { BigNumber, Contract, providers } from "ethers";
+import { Contract, Provider } from "ethers";
 import cTokenAbi from "../abi/ctoken.json";
 import erc20 from "../abi/erc20.json";
 
 export class CTokenAdapter {
   readonly c: Contract;
-  constructor(readonly provider: providers.Provider, readonly kToken: string) {
+  constructor(readonly provider: Provider, readonly kToken: string) {
     this.c = new Contract(kToken, cTokenAbi, provider);
   }
   async underlying(): Promise<{ addr: string; decimals: number; }> {
@@ -13,8 +13,8 @@ export class CTokenAdapter {
     const d = await e.decimals();
     return { addr: u, decimals: Number(d) };
   }
-  borrowBalanceStored(a: string): Promise<BigNumber> { return this.c.borrowBalanceStored(a); }
-  exchangeRateStored(): Promise<BigNumber> { return this.c.exchangeRateStored(); }
+  borrowBalanceStored(a: string): Promise<bigint> { return this.c.borrowBalanceStored(a); }
+  exchangeRateStored(): Promise<bigint> { return this.c.exchangeRateStored(); }
 }
 
 

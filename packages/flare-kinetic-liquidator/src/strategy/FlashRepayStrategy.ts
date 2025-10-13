@@ -1,4 +1,4 @@
-import { BigNumber, Wallet, Contract } from "ethers";
+import { Wallet, Contract } from "ethers";
 import { findPool } from "../dex/Univ3Discovery";
 import PoolAbi from "../abi/univ3pool.json";
 import FlashAbi from "../../artifacts/contracts/FlashLiquidatorV3.sol/FlashLiquidatorV3.json";
@@ -13,10 +13,10 @@ export async function execFlash(
   kTokenColl: string,
   collUnderlying: string,
   flashToken: string,
-  repayAmount: BigNumber,
-  minProfitFlashUnits: BigNumber,
-  minOutDebtSwap: BigNumber,
-  minOutCollSwap: BigNumber,
+  repayAmount: bigint,
+  minProfitFlashUnits: bigint,
+  minOutDebtSwap: bigint,
+  minOutCollSwap: bigint,
   fees: number[]
 ) {
   const prov = w.provider!;

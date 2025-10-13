@@ -1,9 +1,9 @@
-import { Contract, providers } from "ethers";
+import { Contract, Provider } from "ethers";
 import OracleAbi from "../abi/compoundOracle.json";
 
 export class PriceServiceCompound {
   c: Contract;
-  constructor(readonly provider: providers.Provider, readonly oracle: string) {
+  constructor(readonly provider: Provider, readonly oracle: string) {
     this.c = new Contract(oracle, OracleAbi, provider);
   }
   // returns 18-dec USD price

@@ -1,9 +1,9 @@
-import { Contract, providers } from "ethers";
+import { Contract, Provider } from "ethers";
 import ComptrollerAbi from "../abi/comptroller.json";
 const MANTISSA = 1e18;
 
 export class ComptrollerAdapter {
-  constructor(readonly provider: providers.Provider, readonly comptroller: string) {}
+  constructor(readonly provider: Provider, readonly comptroller: string) {}
 
   contract = new Contract(this.comptroller, ComptrollerAbi, this.provider);
 
