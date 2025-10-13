@@ -4,14 +4,21 @@
 
 All commands assume you're in the repo root with `.env` configured.
 
+### Read Contract State
+
+Check current executor configuration:
+
+```powershell
+node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\readState.ts --network flare
+```
+
 ### Emergency Pause
 
 Stop all liquidations immediately:
 
 ```powershell
-cd packages\flare-kinetic-liquidator
 $env:PAUSE="true"
-npx hardhat run scripts\admin\setPaused.ts --network flare
+node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\setPaused.ts --network flare
 ```
 
 ### Resume Operations
@@ -19,9 +26,8 @@ npx hardhat run scripts\admin\setPaused.ts --network flare
 Unpause after resolving issues:
 
 ```powershell
-cd packages\flare-kinetic-liquidator
 $env:PAUSE="false"
-npx hardhat run scripts\admin\setPaused.ts --network flare
+node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\setPaused.ts --network flare
 ```
 
 ### Rescue Stuck Tokens
@@ -29,11 +35,10 @@ npx hardhat run scripts\admin\setPaused.ts --network flare
 If tokens get stuck in the contract:
 
 ```powershell
-cd packages\flare-kinetic-liquidator
 $env:RESCUE_TOKEN="0xTokenAddress"
 $env:RESCUE_TO="0x492CF24a0162Bcd72265d4b7542836A5593d62Ac"
-$env:RESCUE_AMOUNT="1000000"  # Amount in token's native decimals
-npx hardhat run scripts\admin\rescueTokens.ts --network flare
+$env:RESCUE_AMOUNT="1000000"
+node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\rescueTokens.ts --network flare
 ```
 
 **Example - Rescue 1 USDT0 (6 decimals)**:
@@ -41,7 +46,7 @@ npx hardhat run scripts\admin\rescueTokens.ts --network flare
 $env:RESCUE_TOKEN=$env:USDT0
 $env:RESCUE_TO="0x492CF24a0162Bcd72265d4b7542836A5593d62Ac"
 $env:RESCUE_AMOUNT="1000000"
-npx hardhat run scripts\admin\rescueTokens.ts --network flare
+node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\rescueTokens.ts --network flare
 ```
 
 ### Transfer Ownership
@@ -49,9 +54,8 @@ npx hardhat run scripts\admin\rescueTokens.ts --network flare
 Transfer admin rights to a new wallet:
 
 ```powershell
-cd packages\flare-kinetic-liquidator
 $env:NEW_OWNER="0xNewOwnerAddress"
-npx hardhat run scripts\admin\transferOwnership.ts --network flare
+node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\transferOwnership.ts --network flare
 ```
 
 ---
@@ -138,7 +142,7 @@ npm run start:flare
 1. **Pause immediately**:
    ```powershell
    $env:PAUSE="true"
-   npx hardhat run scripts\admin\setPaused.ts --network flare
+   node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\setPaused.ts --network flare
    ```
 
 2. **Investigate**:
@@ -149,7 +153,7 @@ npm run start:flare
 3. **Fix config** and unpause:
    ```powershell
    $env:PAUSE="false"
-   npx hardhat run scripts\admin\setPaused.ts --network flare
+   node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\setPaused.ts --network flare
    ```
 
 ### Scenario 2: Wrong Beneficiary Address
@@ -187,7 +191,7 @@ npm run start:flare
 $env:RESCUE_TOKEN="0xTokenAddress"
 $env:RESCUE_TO="0x492CF24a0162Bcd72265d4b7542836A5593d62Ac"
 $env:RESCUE_AMOUNT="1000000"
-npx hardhat run scripts\admin\rescueTokens.ts --network flare
+node .\node_modules\hardhat\internal\cli\bootstrap.js hardhat run packages\flare-kinetic-liquidator\scripts\admin\rescueTokens.ts --network flare
 ```
 
 ### Scenario 4: Gas Price Spike
