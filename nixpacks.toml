@@ -1,0 +1,15 @@
+[phases.setup]
+nixPkgs = ["nodejs_22"]
+
+[phases.install]
+cmds = ["cd packages/flare-kinetic-liquidator && npm install"]
+
+[phases.build]
+cmds = [
+  "cd packages/flare-kinetic-liquidator && npx hardhat compile",
+  "cd packages/flare-kinetic-liquidator && npm run build"
+]
+
+[start]
+cmd = "cd packages/flare-kinetic-liquidator && node dist/main.js"
+
