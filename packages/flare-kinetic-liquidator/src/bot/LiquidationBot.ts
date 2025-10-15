@@ -115,6 +115,36 @@ export class LiquidationBot {
 
     if (!selected) throw new Error("No valid Comptroller proxy found in UNITROLLER_LIST");
 
+    // ===== ORACLE VALIDATION & OVERRIDE =====
+    // Validate that resolved oracle matches expected oracle (if set)
+    const expectedOracle = process.env.KINETIC_ORACLE?.toLowerCase();
+    const resolvedOracle = selected.oracle.toLowerCase();
+    
+    if (expectedOracle && expectedOracle !== resolvedOracle) {
+      throw new Error(
+        `❌ Oracle mismatch detected!\n` +
+        `   Environment KINETIC_ORACLE: ${expectedOracle}\n` +
+        `   Comptroller.oracle():       ${resolvedOracle}\n` +
+        `   This prevents using wrong oracle feeds. Fix by:\n` +
+        `   - Remove KINETIC_ORACLE to auto-resolve from Comptroller, OR\n` +
+        `   - Set KINETIC_ORACLE=${resolvedOracle} to use Comptroller's oracle`
+      );
+    }
+    
+    // Use explicitly set oracle if provided, otherwise use resolved oracle
+    const finalOracle = expectedOracle || resolvedOracle;
+    
+    this.log({ 
+      event: "oracle_validated",
+      source: expectedOracle ? "env_override" : "comptroller_resolved",
+      oracle: finalOracle,
+      comptroller: selected.addr
+    });
+    
+    // Update selected to use validated oracle
+    selected.oracle = finalOracle;
+    // ===== END ORACLE VALIDATION =====
+
     // Update config to use the valid proxy
     this.config.comptroller = selected.addr;
     this.comptroller = new ComptrollerAdapter(prov, selected.addr);
@@ -264,8 +294,9 @@ export class LiquidationBot {
     
     if (!this.validator) return;
     
-    // Reset RPC call counter for this batch
+    // Reset RPC call counter and HF stats for this batch
     this.validator.resetRpcCallCount();
+    this.validator.resetHfStats();
     
     // Safety: check gas price
     const feeData = await this.provider.getFeeData();
@@ -380,6 +411,29 @@ export class LiquidationBot {
       rpc_calls: rpcCalls,
       avg_rpc_per_candidate: candidates.length > 0 ? Math.floor(rpcCalls / candidates.length) : 0
     });
+    
+    // Log HF distribution telemetry
+    const hfStats = this.validator.getHfStats();
+    if (hfStats.total > 0) {
+      this.log({
+        event: "hf_sample",
+        total_checked: hfStats.total,
+        min_hf: hfStats.min?.toFixed(4) || null,
+        p5_hf: hfStats.p5?.toFixed(4) || null,
+        p50_hf: hfStats.p50?.toFixed(4) || null,
+        watchlist_count: hfStats.watchlistCount,
+        liquidatable_count: hfStats.liquidatableCount
+      });
+      
+      // Alert if accounts are approaching liquidation threshold
+      if (hfStats.watchlistCount > 0) {
+        this.log({
+          event: "watchlist_alert",
+          count: hfStats.watchlistCount,
+          note: `${hfStats.watchlistCount} account(s) with HF between 1.0 and 1.05 (near liquidation)`
+        });
+      }
+    }
     
     // Guard: If we processed candidates but made 0 RPC calls, something is wrong
     if (candidates.length > 0 && rpcCalls === 0) {

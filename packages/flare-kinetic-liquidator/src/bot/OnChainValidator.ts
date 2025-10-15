@@ -26,7 +26,8 @@ const COMPTROLLER_ABI = [
 // CToken ABI
 const CTOKEN_ABI = [
   "function underlying() view returns (address)",
-  "function borrowBalanceStored(address) view returns (uint256)"
+  "function borrowBalanceStored(address) view returns (uint256)",
+  "function symbol() view returns (string)"
 ];
 
 // Oracle ABI
@@ -44,6 +45,11 @@ export class OnChainValidator {
   private comptrollerContract: Contract;
   private oracleContract: Contract | null = null;
   private debugCount = 0;
+  private hfStats: { healthFactors: number[]; watchlistCount: number; liquidatableCount: number } = {
+    healthFactors: [],
+    watchlistCount: 0,
+    liquidatableCount: 0
+  };
 
   constructor(
     readonly provider: Provider,
@@ -63,9 +69,25 @@ export class OnChainValidator {
   }
 
   async init() {
-    // Get oracle address
-    const oracleAddr = await this.comptrollerContract.oracle();
+    // Get oracle address from comptroller
+    const resolvedOracle = await this.comptrollerContract.oracle();
     this.rpcCallCount++;
+    
+    // ===== ORACLE VALIDATION & OVERRIDE =====
+    // Validate that resolved oracle matches expected oracle (if set)
+    const expectedOracle = process.env.KINETIC_ORACLE?.toLowerCase();
+    const oracleAddr = (expectedOracle || resolvedOracle).toLowerCase();
+    
+    if (expectedOracle && expectedOracle !== resolvedOracle.toLowerCase()) {
+      throw new Error(
+        `❌ Oracle mismatch in OnChainValidator!\n` +
+        `   Environment KINETIC_ORACLE: ${expectedOracle}\n` +
+        `   Comptroller.oracle():       ${resolvedOracle.toLowerCase()}\n` +
+        `   This is a configuration error. Ensure KINETIC_ORACLE matches Comptroller's oracle.`
+      );
+    }
+    // ===== END ORACLE VALIDATION =====
+    
     this.oracleContract = new Contract(oracleAddr, ORACLE_ABI, this.provider);
     
     // Log excluded markets once at startup
@@ -80,7 +102,10 @@ export class OnChainValidator {
       console.warn(`   Fix oracle mapping and remove from EXCLUDED_MARKETS to re-enable`);
     }
     
-    console.log(`[OnChainValidator] Comptroller=${this.comptroller.comptroller} Oracle=${oracleAddr}`);
+    console.log(
+      `[OnChainValidator] Comptroller=${this.comptroller.comptroller} ` +
+      `Oracle=${oracleAddr} (${expectedOracle ? 'env_override' : 'comptroller_resolved'})`
+    );
   }
 
   getRpcCallCount(): number {
@@ -89,6 +114,30 @@ export class OnChainValidator {
 
   resetRpcCallCount(): void {
     this.rpcCallCount = 0;
+  }
+
+  getHfStats() {
+    const hfs = this.hfStats.healthFactors.sort((a, b) => a - b);
+    const min = hfs.length > 0 ? hfs[0] : null;
+    const p5 = hfs.length > 0 ? hfs[Math.floor(hfs.length * 0.05)] : null;
+    const p50 = hfs.length > 0 ? hfs[Math.floor(hfs.length * 0.50)] : null;
+    
+    return {
+      total: hfs.length,
+      min,
+      p5,
+      p50,
+      watchlistCount: this.hfStats.watchlistCount,
+      liquidatableCount: this.hfStats.liquidatableCount
+    };
+  }
+
+  resetHfStats(): void {
+    this.hfStats = {
+      healthFactors: [],
+      watchlistCount: 0,
+      liquidatableCount: 0
+    };
   }
 
   /**
@@ -250,7 +299,30 @@ export class OnChainValidator {
             });
           }
         } catch (err: any) {
-          console.warn(`[OnChainValidator] ${candidate.address}: borrow calc failed for ${cToken}: ${err.message}`);
+          // Enhanced error logging with symbol resolution
+          const errorMsg = err.reason || err.message || String(err);
+          
+          // Try to get the token symbol for better logging
+          let symbol = "UNKNOWN";
+          try {
+            const ct = new Contract(cToken, CTOKEN_ABI, this.provider);
+            symbol = await ct.symbol();
+          } catch {
+            // Ignore symbol fetch errors
+          }
+          
+          // Log with symbol and oracle address
+          if (errorMsg.includes("asset config doesn't exist") || 
+              errorMsg.includes("missing revert data")) {
+            console.error(
+              `❌ price-miss ${symbol} ${cToken} via oracle=${scope!.oracle}\n` +
+              `   borrower=${candidate.address}\n` +
+              `   error="${errorMsg}"\n` +
+              `   Add to EXCLUDED_MARKETS or fix oracle mapping on-chain`
+            );
+          } else {
+            console.warn(`[OnChainValidator] ${candidate.address}: borrow calc failed for ${symbol} ${cToken}: ${errorMsg}`);
+          }
         }
       }
       
@@ -302,9 +374,22 @@ export class OnChainValidator {
         return null;
       }
 
+      // Calculate HF for telemetry: HF = liquidity / (liquidity + shortfall)
+      const totalValue = liquidity + shortfall;
+      const healthFactor = totalValue === 0n ? 0 : Number(liquidity) / Number(totalValue);
+      
+      // Track HF stats
+      this.hfStats.healthFactors.push(healthFactor);
+      if (healthFactor < 1.05 && healthFactor >= 1.0) {
+        this.hfStats.watchlistCount++;
+      }
+      if (shortfall > 0n) {
+        this.hfStats.liquidatableCount++;
+      }
+
       // shortfall > 0 means liquidatable (HF < 1.0)
       if (shortfall === 0n) {
-        console.log(`[OnChainValidator] ${candidate.address}: healthy (liquidity=${liquidity.toString()}, shortfall=0)`);
+        console.log(`[OnChainValidator] ${candidate.address}: healthy (HF=${healthFactor.toFixed(4)}, liquidity=${liquidity.toString()})`);
         return null;
       }
 
