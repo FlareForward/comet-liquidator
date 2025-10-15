@@ -1,7 +1,7 @@
-import { Wallet, Contract } from "ethers";
+import { Wallet } from "ethers";
 import { findPool } from "../dex/Univ3Discovery";
 import PoolAbi from "../abi/univ3pool.json";
-import FlashAbi from "../../artifacts/contracts/FlashLiquidatorV3.sol/FlashLiquidatorV3.json";
+import { FlashLiquidatorV3__factory } from "../../typechain-types";
 
 export async function execFlash(
   w: Wallet,
@@ -35,7 +35,7 @@ export async function execFlash(
   
   if (!chosen) throw new Error("pool-not-found");
   
-  const exec = new Contract(flashExecutor, (FlashAbi as any).abi, w);
+  const exec = FlashLiquidatorV3__factory.connect(flashExecutor, w);
   const params = {
     borrower, 
     kTokenDebt, 
