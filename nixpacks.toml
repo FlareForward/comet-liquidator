@@ -1,18 +1,20 @@
+[variables]
+NODE_ENV = "production"
+
 [phases.setup]
-nixPkgs = ["nodejs_22"]
+nixPkgs = ["nodejs"]
 
 [phases.install]
-cwd = "packages/flare-kinetic-liquidator"
-cmds = ["npm install"]
+cmds = ["cd packages/flare-kinetic-liquidator && npm ci --only=production --ignore-scripts"]
 
 [phases.build]
-cwd = "packages/flare-kinetic-liquidator"
 cmds = [
-  "npx hardhat compile",
-  "npm run build"
+  "cd packages/flare-kinetic-liquidator && npm install",
+  "cd packages/flare-kinetic-liquidator && npx hardhat compile",
+  "cd packages/flare-kinetic-liquidator && npx tsc -p tsconfig.json",
+  "ls -la packages/flare-kinetic-liquidator/dist || echo 'dist folder not found'"
 ]
 
 [start]
-cmd = "node dist/main.js"
-cwd = "packages/flare-kinetic-liquidator"
+cmd = "cd packages/flare-kinetic-liquidator && node dist/main.js"
 
