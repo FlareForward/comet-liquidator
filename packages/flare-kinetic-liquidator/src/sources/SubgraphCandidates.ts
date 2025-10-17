@@ -33,60 +33,64 @@ export class SubgraphCandidates {
     
     while (hasMore) {
       const query = `
-        query BorrowerCandidates($pageSize: Int!, $skip: Int!) {
-          accountMarkets(first: $pageSize, skip: $skip, where: { storedBorrowBalance_gt: "0" }) {
-            account { id }
-            market { id }
-            storedBorrowBalance
+        query GetAccounts($pageSize: Int!, $skip: Int!) {
+          accounts(
+            first: $pageSize,
+            skip: $skip,
+            orderBy: totalBorrowValueInUSD,
+            orderDirection: desc,
+            where: { totalBorrowValueInUSD_gt: "0" }
+          ) {
+            id
+            totalBorrowValueInUSD
+            totalCollateralValueInUSD
           }
         }
       `;
       
       try {
         const resp = await this.executeQuery(query, { pageSize: this.pageSize, skip });
-        const accountMarkets = resp.data?.data?.accountMarkets || [];
-        
-        if (accountMarkets.length === 0) {
-          console.log(`[SubgraphCandidates] No accountMarkets returned, trying fallback query`);
-          return this.fetchFallback();
+        const accounts = resp.data?.data?.accounts || [];
+
+        if (accounts.length === 0) {
+          console.log(`[SubgraphCandidates] Page skip=${skip}: 0 results, stopping`);
+          hasMore = false;
+          break;
         }
-        
+
         let addedThisPage = 0;
-        for (const am of accountMarkets) {
-          const addr = (am.account?.id || "").toLowerCase();
+        for (const a of accounts) {
+          const addr = (a?.id || "").toLowerCase();
           if (!addr) continue;
-          
-          // Filter denylisted addresses early
-          if (isDenied(addr)) {
-            continue;
-          }
-          
+
+          if (isDenied(addr)) continue;
+
           if (!borrowerSet.has(addr)) {
             borrowerSet.add(addr);
             addedThisPage++;
           }
         }
-        
+
         console.log(`[SubgraphCandidates] Page skip=${skip}: found ${addedThisPage} new borrowers (total: ${borrowerSet.size})`);
-        
-        // If we got fewer results than pageSize, we're done
-        hasMore = addedThisPage >= this.pageSize;
+
+        hasMore = accounts.length >= this.pageSize;
         skip += this.pageSize;
-        
-        // Safety limit: don't paginate forever
+
         if (skip > 50000) {
           console.warn(`[SubgraphCandidates] Hit safety limit at skip=${skip}, stopping pagination`);
           break;
         }
-        
+
       } catch (err: any) {
         const code = err?.response?.status || err?.code || err?.message;
-        if (code === 404 || err?.message === "SUBGRAPH_404") {
+        const msg = String(err?.message || "");
+        if (code === 404 || msg === "SUBGRAPH_404") {
           console.error(`[SubgraphCandidates] 404 at ${this.url}. Disabling subgraph for this run.`);
-        } else {
-          console.error(`[SubgraphCandidates] Error fetching page skip=${skip}:`, err.message);
+          if (skip === 0) throw err;
+          hasMore = false;
+          continue;
         }
-        // If first page fails, rethrow so caller can trigger chain sweep immediately
+        console.error(`[SubgraphCandidates] Error fetching page skip=${skip}:`, msg);
         if (skip === 0) throw err;
         hasMore = false;
       }
