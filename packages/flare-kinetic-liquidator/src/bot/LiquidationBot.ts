@@ -276,6 +276,28 @@ export class LiquidationBot {
       this.log({ event: "denylist_filtered", count: filtered });
     }
     
+    // Optional: prioritize specific borrowers first via PRIORITY_LIST (comma-separated addresses)
+    const priority = (process.env.PRIORITY_LIST || "")
+      .split(",")
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (priority.length > 0 && candidates.length > 0) {
+      const addrToCandidate = new Map<string, any>();
+      for (const c of candidates) addrToCandidate.set(c.address.toLowerCase(), c);
+      const prioritized: any[] = [];
+      const seen = new Set<string>();
+      for (const a of priority) {
+        const c = addrToCandidate.get(a);
+        if (c) {
+          prioritized.push(c);
+          seen.add(a);
+        }
+      }
+      const rest = candidates.filter(c => !seen.has(c.address.toLowerCase()));
+      const before = candidates.length;
+      candidates = [...prioritized, ...rest];
+      this.log({ event: "priority_applied", prioritized: prioritized.length, total: before });
+    }
     this.log({ event: "total_candidates", count: candidates.length });
     
     if (!this.validator) return;
@@ -374,22 +396,80 @@ export class LiquidationBot {
         liquidated++; // count as processed
         continue;
       }
-      
-      // Execute liquidation
-      this.log({ 
-        event: "executing_liquidation", 
-        borrower: validated.address,
-        repay_market: selectedRepayMarket,
-        comptroller: validated.comptroller
-      });
-      
-      // TODO: Wire actual execution via execFlash once profit estimation is ready
-      this.log({ 
-        event: "execution_pending", 
-        borrower: validated.address,
-        note: "Profit estimation and flash execution not yet wired"
-      });
-      liquidated++;
+
+      // ===== Execution Path =====
+      try {
+        // Select a collateral market different from the repay market
+        const collMarket = eligibleMarkets.find(m => m.toLowerCase() !== selectedRepayMarket!.toLowerCase()) || eligibleMarkets[0];
+
+        // Resolve underlyings for debt and collateral markets
+        const cRepay = new Contract(selectedRepayMarket!, ["function underlying() view returns (address)"], this.provider);
+        const cColl = new Contract(collMarket, ["function underlying() view returns (address)"], this.provider);
+        const [debtUnderlying, collUnderlying] = await Promise.all([
+          cRepay.underlying(),
+          cColl.underlying()
+        ]);
+
+        // Repay amount capped by close factor
+        const params = await this.comptroller.getParams();
+        const closeFactorMantissa18 = BigInt(Math.floor(params.closeFactor * 1e18));
+        const repayAmount = calcRepayAmount(await (new Contract(selectedRepayMarket!, ["function borrowBalanceStored(address) view returns (uint256)"], this.provider)).borrowBalanceStored(validated.address), closeFactorMantissa18);
+
+        // Estimate profitability before executing
+        const profitable = await this.estimateProfitability(
+          validated.address,
+          { underlying: debtUnderlying },
+          { underlying: collUnderlying },
+          repayAmount,
+          params.liqIncentive
+        );
+
+        if (!profitable.isProfitable) {
+          this.log({ 
+            event: "skip_unprofitable", 
+            borrower: validated.address, 
+            estimatedPnlUsd: profitable.pnlUsd 
+          });
+          continue;
+        }
+
+        this.log({ 
+          event: "executing_liquidation", 
+          borrower: validated.address,
+          repay_market: selectedRepayMarket,
+          coll_market: collMarket,
+          repay_amount: repayAmount.toString()
+        });
+
+        // Execute flash liquidation
+        const receipt = await execFlash(
+          this.wallet!,
+          this.config.v3Factory,
+          this.config.flashExecutor,
+          validated.address,
+          selectedRepayMarket!,
+          debtUnderlying,
+          collMarket,
+          collUnderlying,
+          profitable.flashToken,
+          repayAmount,
+          profitable.minProfit,
+          profitable.minOutDebt,
+          profitable.minOutColl,
+          this.config.v3FeeCandidates
+        );
+
+        this.log({
+          event: "liquidation_success",
+          borrower: validated.address,
+          tx: receipt.hash,
+          gasUsed: receipt.gasUsed?.toString(),
+          blockNumber: receipt.blockNumber
+        });
+        liquidated++;
+      } catch (err: any) {
+        this.log({ event: "liquidation_error", borrower: validated.address, error: err.message });
+      }
       continue;
     }
     
