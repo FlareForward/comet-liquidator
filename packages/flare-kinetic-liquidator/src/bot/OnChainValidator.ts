@@ -332,8 +332,8 @@ export class OnChainValidator {
         }
       }
 
-      // Apply minimum debt threshold
-      const minDebtUSD = BigInt(process.env.DEBT_MIN_USD || "1") * (10n ** 18n);
+      // Apply minimum debt threshold (explicit 1e18 mantissa)
+      const minDebtUSD = BigInt(process.env.DEBT_MIN_USD_WEI || "1000000000000000000");
       
       if (totalBorrowUSD === 0n) {
         console.log(`[OnChainValidator] ${candidate.address}: no_debt_chain (assetsIn=${assetsIn.length}, totalBorrowUSD=0)`);

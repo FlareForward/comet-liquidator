@@ -284,12 +284,17 @@ export class LiquidationBot {
     this.validator.resetRpcCallCount();
     this.validator.resetHfStats();
     
-    // Safety: check gas price
-    const feeData = await this.provider.getFeeData();
-    const gasPrice = feeData.gasPrice || 0n;
-    if (gasPrice > this.config.maxGasPrice) {
-      this.log({ event: "gas_too_high", gasPrice: gasPrice.toString(), max: this.config.maxGasPrice.toString() });
-      return;
+    // Safety: check gas price (can be disabled via DISABLE_GAS_GUARD)
+    const gasGuardDisabled = process.env.DISABLE_GAS_GUARD === "1" || process.env.DISABLE_GAS_GUARD === "true";
+    if (!gasGuardDisabled) {
+      const feeData = await this.provider.getFeeData();
+      const gasPrice = feeData.gasPrice || 0n;
+      if (gasPrice > this.config.maxGasPrice) {
+        this.log({ event: "gas_too_high", gasPrice: gasPrice.toString(), max: this.config.maxGasPrice.toString() });
+        return;
+      }
+    } else {
+      this.log({ event: "gas_guard_disabled" });
     }
     
     let liquidated = 0;
