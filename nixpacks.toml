@@ -16,5 +16,5 @@ cmds = [
 ]
 
 [start]
-cmd = "cd packages/flare-kinetic-liquidator && node dist/main.js"
+cmd = "cd packages/flare-kinetic-liquidator && node dist/src/main.js"
 
