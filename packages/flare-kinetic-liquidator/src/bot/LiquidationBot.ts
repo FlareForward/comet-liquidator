@@ -281,7 +281,21 @@ export class LiquidationBot {
       .split(",")
       .map(s => s.trim().toLowerCase())
       .filter(Boolean);
-    if (priority.length > 0 && candidates.length > 0) {
+    if (priority.length > 0) {
+      // Inject any priority addresses that are not already in candidates
+      const present = new Set(candidates.map(c => c.address.toLowerCase()));
+      const toInject: any[] = [];
+      for (const a of priority) {
+        if (!present.has(a) && !isDenied(a)) {
+          toInject.push({ address: a, totalBorrow: "0", totalCollateral: "0" });
+          present.add(a);
+        }
+      }
+      if (toInject.length > 0) {
+        candidates = [...toInject, ...candidates];
+        this.log({ event: "priority_injected", count: toInject.length });
+      }
+
       const addrToCandidate = new Map<string, any>();
       for (const c of candidates) addrToCandidate.set(c.address.toLowerCase(), c);
       const prioritized: any[] = [];
@@ -643,6 +657,56 @@ export class LiquidationBot {
   }
   
   log(data: any) {
-    console.log(JSON.stringify({ timestamp: new Date().toISOString(), ...data }));
+    const payload = { timestamp: new Date().toISOString(), ...data };
+    console.log(JSON.stringify(payload));
+    const pretty = process.env.LOG_PRETTY === "1" || process.env.LOG_PRETTY === "true";
+    if (!pretty) return;
+    const e = data.event;
+    let msg = "";
+    switch (e) {
+      case "init_start":
+        msg = `Init HF_SOURCE=${data.HF_SOURCE} source=${data.candidate_source}`; break;
+      case "valid_proxy_found":
+        msg = `Proxy ${data.addr} oracle=${data.oracle}`; break;
+      case "oracle_selected":
+        msg = `Oracle=${data.oracle} comptroller=${data.comptroller}`; break;
+      case "markets_discovered":
+        msg = `Markets=${data.count}`; break;
+      case "fetch_candidates_start":
+        msg = `Fetching candidates (source=${data.source}, subgraph=${data.useSubgraph})`; break;
+      case "subgraph_candidates":
+        msg = `Subgraph candidates=${data.count}`; break;
+      case "chain_candidates_found":
+        msg = `Chain candidates=${data.count}`; break;
+      case "candidate_limit_applied":
+        msg = `Limit ${data.before} -> ${data.after}`; break;
+      case "denylist_filtered":
+        msg = `Filtered=${data.count}`; break;
+      case "priority_injected":
+        msg = `Injected priority=${data.count}`; break;
+      case "priority_applied":
+        msg = `Prioritized=${data.prioritized} total=${data.total}`; break;
+      case "total_candidates":
+        msg = `Total candidates=${data.count}`; break;
+      case "liquidatable_found":
+        msg = `Liquidatable ${data.borrower} short=${data.shortfall} borUSD=${data.totalBorrowUSD}`; break;
+      case "market_selected":
+        msg = `Market ${data.repay_market} debt=${data.debt}`; break;
+      case "executing_liquidation":
+        msg = `Execute borrower=${data.borrower} repay=${data.repay_market}`; break;
+      case "liquidation_success":
+        msg = `Success tx=${data.tx}`; break;
+      case "liquidation_error":
+        msg = `Error borrower=${data.borrower} ${data.error}`; break;
+      case "gas_too_high":
+        msg = `Gas too high ${data.gasPrice} > ${data.max}`; break;
+      case "gas_guard_disabled":
+        msg = `Gas guard disabled`; break;
+      case "hf_sample":
+        msg = `HF stats min=${data.min_hf} p50=${data.p50_hf} liq=${data.liquidatable_count}`; break;
+      default:
+        msg = "";
+    }
+    if (msg) console.log(`[${e}] ${msg}`);
   }
 }
