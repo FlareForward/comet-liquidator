@@ -11,7 +11,7 @@ cmds = ["cd packages/flare-kinetic-liquidator && npm ci --only=production --igno
 cmds = [
   "cd packages/flare-kinetic-liquidator && npm install",
   "cd packages/flare-kinetic-liquidator && npx hardhat compile",
-  "cd packages/flare-kinetic-liquidator && npx tsc -p tsconfig.json",
+  "cd packages/flare-kinetic-liquidator && rm -rf dist && npx tsc -p tsconfig.json",
   "ls -la packages/flare-kinetic-liquidator/dist || echo 'dist folder not found'"
 ]
 
