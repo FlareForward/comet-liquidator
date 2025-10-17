@@ -459,13 +459,20 @@ export class LiquidationBot {
           this.config.v3FeeCandidates
         );
 
-        this.log({
-          event: "liquidation_success",
-          borrower: validated.address,
-          tx: receipt.hash,
-          gasUsed: receipt.gasUsed?.toString(),
-          blockNumber: receipt.blockNumber
-        });
+        if (!receipt) {
+          this.log({
+            event: "liquidation_tx_pending_or_null_receipt",
+            borrower: validated.address
+          });
+        } else {
+          this.log({
+            event: "liquidation_success",
+            borrower: validated.address,
+            tx: receipt.hash,
+            gasUsed: receipt.gasUsed?.toString(),
+            blockNumber: receipt.blockNumber
+          });
+        }
         liquidated++;
       } catch (err: any) {
         this.log({ event: "liquidation_error", borrower: validated.address, error: err.message });
