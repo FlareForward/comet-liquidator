@@ -21,6 +21,10 @@ export class SubgraphCandidates {
    * This is more reliable than account-level queries for Kinetic subgraphs.
    */
   async fetch(): Promise<Candidate[]> {
+    if (!this.url || this.url.trim().length === 0) {
+      console.warn(`[SubgraphCandidates] URL empty; subgraph disabled`);
+      return [];
+    }
     const borrowerSet = new Set<string>();
     let skip = 0;
     let hasMore = true;
@@ -29,45 +33,37 @@ export class SubgraphCandidates {
     
     while (hasMore) {
       const query = `
-        query GetBorrowers($pageSize: Int!, $skip: Int!) {
-          markets(first: 1000) {
-            id
-            symbol
-            borrowers: accounts(
-              first: $pageSize, 
-              skip: $skip, 
-              where: { totalUnderlyingBorrowed_gt: "0" }
-            ) {
-              id
-            }
+        query BorrowerCandidates($pageSize: Int!, $skip: Int!) {
+          accountMarkets(first: $pageSize, skip: $skip, where: { storedBorrowBalance_gt: "0" }) {
+            account { id }
+            market { id }
+            storedBorrowBalance
           }
         }
       `;
       
       try {
         const resp = await this.executeQuery(query, { pageSize: this.pageSize, skip });
-        const markets = resp.data?.data?.markets || [];
+        const accountMarkets = resp.data?.data?.accountMarkets || [];
         
-        if (markets.length === 0) {
-          console.log(`[SubgraphCandidates] No markets returned, trying fallback query`);
+        if (accountMarkets.length === 0) {
+          console.log(`[SubgraphCandidates] No accountMarkets returned, trying fallback query`);
           return this.fetchFallback();
         }
         
         let addedThisPage = 0;
-        for (const market of markets) {
-          const borrowers = market.borrowers || [];
-          for (const borrower of borrowers) {
-            const addr = borrower.id.toLowerCase();
-            
-            // Filter denylisted addresses early
-            if (isDenied(addr)) {
-              continue;
-            }
-            
-            if (!borrowerSet.has(addr)) {
-              borrowerSet.add(addr);
-              addedThisPage++;
-            }
+        for (const am of accountMarkets) {
+          const addr = (am.account?.id || "").toLowerCase();
+          if (!addr) continue;
+          
+          // Filter denylisted addresses early
+          if (isDenied(addr)) {
+            continue;
+          }
+          
+          if (!borrowerSet.has(addr)) {
+            borrowerSet.add(addr);
+            addedThisPage++;
           }
         }
         
@@ -84,7 +80,14 @@ export class SubgraphCandidates {
         }
         
       } catch (err: any) {
-        console.error(`[SubgraphCandidates] Error fetching page skip=${skip}:`, err.message);
+        const code = err?.response?.status || err?.code || err?.message;
+        if (code === 404 || err?.message === "SUBGRAPH_404") {
+          console.error(`[SubgraphCandidates] 404 at ${this.url}. Disabling subgraph for this run.`);
+        } else {
+          console.error(`[SubgraphCandidates] Error fetching page skip=${skip}:`, err.message);
+        }
+        // If first page fails, rethrow so caller can trigger chain sweep immediately
+        if (skip === 0) throw err;
         hasMore = false;
       }
     }
@@ -152,12 +155,22 @@ export class SubgraphCandidates {
           }
         );
         
+        if (resp.status === 404) {
+          const e: any = new Error("SUBGRAPH_404");
+          e.code = 404;
+          throw e;
+        }
+
         if (resp.data?.errors) {
           throw new Error(`GraphQL errors: ${JSON.stringify(resp.data.errors)}`);
         }
         
         return resp;
       } catch (err: any) {
+        if (err?.code === 404 || err?.message === "SUBGRAPH_404" || err?.response?.status === 404) {
+          // Do not retry 404, bubble up immediately
+          throw err;
+        }
         if (attempt === this.retries) {
           throw err;
         }

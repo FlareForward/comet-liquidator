@@ -115,35 +115,21 @@ export class LiquidationBot {
 
     if (!selected) throw new Error("No valid Comptroller proxy found in UNITROLLER_LIST");
 
-    // ===== ORACLE VALIDATION & OVERRIDE =====
-    // Validate that resolved oracle matches expected oracle (if set)
-    const expectedOracle = process.env.KINETIC_ORACLE?.toLowerCase();
+    // ===== ORACLE SELECTION =====
+    // Always use Comptroller-resolved oracle, ignore any env override
     const resolvedOracle = selected.oracle.toLowerCase();
-    
-    if (expectedOracle && expectedOracle !== resolvedOracle) {
-      throw new Error(
-        `❌ Oracle mismatch detected!\n` +
-        `   Environment KINETIC_ORACLE: ${expectedOracle}\n` +
-        `   Comptroller.oracle():       ${resolvedOracle}\n` +
-        `   This prevents using wrong oracle feeds. Fix by:\n` +
-        `   - Remove KINETIC_ORACLE to auto-resolve from Comptroller, OR\n` +
-        `   - Set KINETIC_ORACLE=${resolvedOracle} to use Comptroller's oracle`
-      );
-    }
-    
-    // Use explicitly set oracle if provided, otherwise use resolved oracle
-    const finalOracle = expectedOracle || resolvedOracle;
+    const finalOracle = resolvedOracle;
     
     this.log({ 
-      event: "oracle_validated",
-      source: expectedOracle ? "env_override" : "comptroller_resolved",
+      event: "oracle_selected",
+      source: "comptroller_resolved",
       oracle: finalOracle,
       comptroller: selected.addr
     });
     
     // Update selected to use validated oracle
     selected.oracle = finalOracle;
-    // ===== END ORACLE VALIDATION =====
+    // ===== END ORACLE SELECTION =====
 
     // Update config to use the valid proxy
     this.config.comptroller = selected.addr;

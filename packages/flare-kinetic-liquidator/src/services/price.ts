@@ -53,6 +53,8 @@ export async function borrowUsd18(user: string, cToken: string, provider: Provid
 export async function borrowUsd18WithOracle(user: string, cToken: string, provider: Provider, oracleAddr: string): Promise<U256> {
   const ct = new Contract(cToken, CTOKEN_MIN_ABI, provider);
   const oracle = new Contract(oracleAddr, ORACLE_ABI, provider);
+  // Loud log for oracle used per price read
+  console.log(`[PriceService] oracle=${oracleAddr} cToken=${cToken}`);
   const [p, borrow] = await Promise.all([
     oracle.getUnderlyingPrice(cToken),
     ct.borrowBalanceStored(user)

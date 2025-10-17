@@ -20,11 +20,13 @@ export async function chainBorrowerSweep(
       for (const k of kTokens) {
         const c = new Contract(k, cTokenAbi, prov);
         
-        // Scan both Borrow and LiquidateBorrow events
+        // Scan Borrow, RepayBorrow and LiquidateBorrow events
         const evBorrow = c.getEvent("Borrow");
+        const evRepay = c.getEvent("RepayBorrow");
         const evLiq = c.getEvent("LiquidateBorrow");
         
         const logsB = await c.queryFilter(evBorrow, start, end);
+        const logsR = await c.queryFilter(evRepay, start, end);
         const logsL = await c.queryFilter(evLiq, start, end);
         
         // Process Borrow events
@@ -53,9 +55,23 @@ export async function chainBorrowerSweep(
           }
         }
         
-        const totalEvents = logsB.length + logsL.length;
+        // Process RepayBorrow events (recent repayers may still be candidates in edge windows)
+        for (const lg of logsR) {
+          if ('args' in lg && lg.args) {
+            // Kinetic RepayBorrow signature typically: (payer, borrower, repayAmount, accountBorrows, totalBorrows)
+            const b = (lg.args as any)?.borrower as string;
+            if (b) {
+              seen.add(b.toLowerCase());
+              if (process.env.DEBUG_CANDIDATES === "1") {
+                console.log(`[ChainSweep] RepayBorrow borrower: ${b}`);
+              }
+            }
+          }
+        }
+        
+        const totalEvents = logsB.length + logsL.length + logsR.length;
         if (totalEvents > 0) {
-          console.log(`[ChainSweep] ${k}: found ${logsB.length} Borrow + ${logsL.length} LiquidateBorrow events in blocks ${start}-${end}`);
+          console.log(`[ChainSweep] ${k}: found ${logsB.length} Borrow + ${logsL.length} LiquidateBorrow + ${logsR.length} RepayBorrow events in blocks ${start}-${end}`);
         }
       }
       

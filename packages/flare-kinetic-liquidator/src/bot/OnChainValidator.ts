@@ -73,21 +73,9 @@ export class OnChainValidator {
     const resolvedOracle = await this.comptrollerContract.oracle();
     this.rpcCallCount++;
     
-    // ===== ORACLE VALIDATION & OVERRIDE =====
-    // Validate that resolved oracle matches expected oracle (if set)
-    const expectedOracle = process.env.KINETIC_ORACLE?.toLowerCase();
-    const oracleAddr = (expectedOracle || resolvedOracle).toLowerCase();
-    
-    if (expectedOracle && expectedOracle !== resolvedOracle.toLowerCase()) {
-      throw new Error(
-        `❌ Oracle mismatch in OnChainValidator!\n` +
-        `   Environment KINETIC_ORACLE: ${expectedOracle}\n` +
-        `   Comptroller.oracle():       ${resolvedOracle.toLowerCase()}\n` +
-        `   This is a configuration error. Ensure KINETIC_ORACLE matches Comptroller's oracle.`
-      );
-    }
-    // ===== END ORACLE VALIDATION =====
-    
+    // ===== ORACLE SELECTION =====
+    // Always use Comptroller-resolved oracle, ignore any env override
+    const oracleAddr = resolvedOracle.toLowerCase();
     this.oracleContract = new Contract(oracleAddr, ORACLE_ABI, this.provider);
     
     // Log excluded markets once at startup
@@ -104,7 +92,7 @@ export class OnChainValidator {
     
     console.log(
       `[OnChainValidator] Comptroller=${this.comptroller.comptroller} ` +
-      `Oracle=${oracleAddr} (${expectedOracle ? 'env_override' : 'comptroller_resolved'})`
+      `Oracle=${oracleAddr} (comptroller_resolved)`
     );
   }
 
