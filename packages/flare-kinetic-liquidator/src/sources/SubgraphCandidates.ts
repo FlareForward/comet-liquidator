@@ -33,34 +33,26 @@ export class SubgraphCandidates {
     
     while (hasMore) {
       const query = `
-        query GetAccounts($pageSize: Int!, $skip: Int!) {
-          accounts(
-            first: $pageSize,
-            skip: $skip,
-            orderBy: totalBorrowValueInUSD,
-            orderDirection: desc,
-            where: { totalBorrowValueInUSD_gt: "0" }
-          ) {
-            id
-            totalBorrowValueInUSD
-            totalCollateralValueInUSD
+        query GetBorrowers($pageSize: Int!, $skip: Int!) {
+          borrowerPositions(first: $pageSize, skip: $skip) {
+            borrower
           }
         }
       `;
       
       try {
         const resp = await this.executeQuery(query, { pageSize: this.pageSize, skip });
-        const accounts = resp.data?.data?.accounts || [];
+        const positions = resp.data?.data?.borrowerPositions || [];
 
-        if (accounts.length === 0) {
+        if (positions.length === 0) {
           console.log(`[SubgraphCandidates] Page skip=${skip}: 0 results, stopping`);
           hasMore = false;
           break;
         }
 
         let addedThisPage = 0;
-        for (const a of accounts) {
-          const addr = (a?.id || "").toLowerCase();
+        for (const pos of positions) {
+          const addr = (pos?.borrower || "").toLowerCase();
           if (!addr) continue;
 
           if (isDenied(addr)) continue;
@@ -73,7 +65,7 @@ export class SubgraphCandidates {
 
         console.log(`[SubgraphCandidates] Page skip=${skip}: found ${addedThisPage} new borrowers (total: ${borrowerSet.size})`);
 
-        hasMore = accounts.length >= this.pageSize;
+        hasMore = positions.length >= this.pageSize;
         skip += this.pageSize;
 
         if (skip > 50000) {
