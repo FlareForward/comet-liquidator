@@ -1,4 +1,4 @@
-import { Provider, Contract } from "ethers";
+import { Provider, Contract, formatUnits } from "ethers";
 import { ComptrollerAdapter } from "../adapters/ComptrollerAdapter";
 import { PriceServiceCompound } from "../services/PriceServiceCompound";
 import { borrowUsd18WithOracle } from "../services/price";
@@ -341,11 +341,26 @@ export class OnChainValidator {
       }
 
       if (totalBorrowUSD < minDebtUSD) {
-        console.log(`[OnChainValidator] ${candidate.address}: debt_too_small (assetsIn=${assetsIn.length}, totalBorrowUSD=${totalBorrowUSD}, min=${minDebtUSD})`);
+        const totalUsdHuman = formatUnits(totalBorrowUSD, 18);
+        const minUsdHuman = formatUnits(minDebtUSD, 18);
+        const showWei = process.env.DEBUG_WEI === "1" || process.env.DEBUG_WEI === "true";
+        if (showWei) {
+          console.log(`[OnChainValidator] ${candidate.address}: debt_too_small (assetsIn=${assetsIn.length}, totalBorrowUSD=${totalBorrowUSD} (~$${totalUsdHuman}), min=${minDebtUSD} (~$${minUsdHuman}))`);
+        } else {
+          console.log(`[OnChainValidator] ${candidate.address}: debt_too_small (assetsIn=${assetsIn.length}, totalBorrowUSD=~$${totalUsdHuman}, min=~$${minUsdHuman})`);
+        }
         return null;
       }
 
-      console.log(`[OnChainValidator] ${candidate.address}: has_debt (assetsIn=${assetsIn.length}, totalBorrowUSD=${totalBorrowUSD.toString()})`);
+      {
+        const totalUsdHuman = formatUnits(totalBorrowUSD, 18);
+        const showWei = process.env.DEBUG_WEI === "1" || process.env.DEBUG_WEI === "true";
+        if (showWei) {
+          console.log(`[OnChainValidator] ${candidate.address}: has_debt (assetsIn=${assetsIn.length}, totalBorrowUSD=${totalBorrowUSD.toString()} (~$${totalUsdHuman}))`);
+        } else {
+          console.log(`[OnChainValidator] ${candidate.address}: has_debt (assetsIn=${assetsIn.length}, totalBorrowUSD=~$${totalUsdHuman})`);
+        }
+      }
 
       // Debug logging for first few candidates
       if (shouldDebug) {

@@ -17,6 +17,7 @@ const COMPTROLLER_MIN_ABI = [
 ];
 
 const ONE_E36 = 10n ** 36n;
+const ONE_E18 = 10n ** 18n;
 
 export type U256 = bigint;
 
@@ -46,7 +47,9 @@ export async function borrowUsd18(user: string, cToken: string, provider: Provid
     priceMantissa(cToken, provider),
     ct.borrowBalanceStored(user)
   ]);
-  return (BigInt(borrow) * BigInt(p)) / ONE_E36;
+  // Compound: price = 1e(36 - uDecimals); borrow = 1e(uDecimals)
+  // USD (18-dec) = (borrow * price) / 1e18
+  return (BigInt(borrow) * BigInt(p)) / ONE_E18;
 }
 
 // Variant when oracle address is already known for the user's scope
@@ -59,7 +62,8 @@ export async function borrowUsd18WithOracle(user: string, cToken: string, provid
     oracle.getUnderlyingPrice(cToken),
     ct.borrowBalanceStored(user)
   ]);
-  return (asU256(borrow) * asU256(p)) / ONE_E36;
+  // USD (18-dec) = (borrow * price) / 1e18
+  return (asU256(borrow) * asU256(p)) / ONE_E18;
 }
 
 
