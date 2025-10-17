@@ -377,9 +377,18 @@ export class OnChainValidator {
         return null;
       }
 
-      // Calculate HF for telemetry: HF = liquidity / (liquidity + shortfall)
-      const totalValue = liquidity + shortfall;
-      const healthFactor = totalValue === 0n ? 0 : Number(liquidity) / Number(totalValue);
+      // Calculate HF using C/B derived from (L,S) and B:
+      //  - If shortfall > 0: HF = (B - S) / B = 1 - S/B
+      //  - If liquidity > 0: HF = (B + L) / B = 1 + L/B
+      //  All values are 1e18 USD mantissa
+      let healthFactor = 0;
+      if (totalBorrowUSD > 0n) {
+        if (shortfall > 0n) {
+          healthFactor = Math.max(0, 1 - Number(shortfall) / Number(totalBorrowUSD));
+        } else {
+          healthFactor = 1 + Number(liquidity) / Number(totalBorrowUSD);
+        }
+      }
       
       // Track HF stats
       this.hfStats.healthFactors.push(healthFactor);
@@ -392,7 +401,7 @@ export class OnChainValidator {
 
       // shortfall > 0 means liquidatable (HF < 1.0)
       if (shortfall === 0n) {
-        console.log(`[OnChainValidator] ${candidate.address}: healthy (HF=${healthFactor.toFixed(4)}, liquidity=${liquidity.toString()})`);
+        console.log(`[OnChainValidator] ${candidate.address}: healthy (HF=${healthFactor.toFixed(4)}, L=${liquidity.toString()}, B=${totalBorrowUSD.toString()})`);
         return null;
       }
 
